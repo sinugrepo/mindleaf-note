@@ -1,0 +1,80 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@layer base {
+  body {
+    @apply text-zinc-900;
+    background-color: #f0f9ff;
+    background-image: 
+      radial-gradient(circle at 15% 10%, #bae6fd 0%, transparent 40%),
+      radial-gradient(circle at 85% 15%, #bfdbfe 0%, transparent 45%),
+      radial-gradient(circle at 20% 85%, #dbeafe 0%, transparent 50%),
+      radial-gradient(circle at 80% 85%, #93c5fd 0%, transparent 45%),
+      radial-gradient(circle at 50% 50%, #e0f2fe 0%, transparent 50%);
+    background-attachment: fixed;
+  }
+  
+  .dark body {
+    @apply text-zinc-200;
+    background: #030303;
+    background-image: 
+      radial-gradient(at 0% 0%, #111115 0, transparent 60%), 
+      radial-gradient(at 100% 100%, #08080a 0, transparent 60%);
+    background-attachment: fixed;
+  }
+
+  .prose ul[data-type="taskList"] {
+    list-style: none;
+    padding: 0;
+  }
+  
+  .prose ul[data-type="taskList"] p {
+    margin: 0;
+  }
+
+  .prose ul[data-type="taskList"] li {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .prose ul[data-type="taskList"] li > label {
+    flex: 0 0 auto;
+    user-select: none;
+    padding-top: 0.15rem;
+  }
+
+  .prose ul[data-type="taskList"] li > div {
+    flex: 1 1 auto;
+  }
+  
+  .prose ul[data-type="taskList"] input[type="checkbox"] {
+    cursor: pointer;
+  }
+
+  .prose img {
+    @apply rounded-md shadow-sm border border-zinc-200 dark:border-white/10;
+    max-height: 500px;
+    object-fit: contain;
+  }
+
+  /* Inline wiki-style `[[Note Title]]` link. Styled like a normal
+     hyperlink so it reads naturally inside paragraphs but is
+     immediately distinguishable from external URLs. The mark
+     itself is a TipTap mark; this CSS only governs the visual
+     treatment of its rendered `<span class="wikilink">`. */
+  .wikilink {
+    @apply text-blue-600 dark:text-blue-300 underline underline-offset-2;
+    text-decoration-color: rgba(37, 99, 235, 0.35);
+    cursor: pointer;
+    transition: color 120ms ease;
+  }
+  .wikilink:hover {
+    @apply text-blue-700 dark:text-blue-200;
+  }
+  .dark .wikilink {
+    text-decoration-color: rgba(147, 197, 253, 0.35);
+  }
+}
+

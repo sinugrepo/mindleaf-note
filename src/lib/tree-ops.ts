@@ -1,0 +1,223 @@
+import { Note } from '../types';
+
+/**
+ * Result of validating whether a dragged item can be dropped onto a target folder.
+ */
+export interface DropValidationResult {
+  valid: boolean;
+  reason?: 'not-folder' | 'self-drop' | 'descendant' | 'missing-id';
+}
+
+/**
+ * Validates a drag-and-drop move. Returns invalid if:
+ * - The target is not a folder
+ * - The dragged id matches the target id (self-drop)
+ * - The target folder is itself a descendant of the dragged note (would create a cycle)
+ * - The dragged id is missing/empty
+ */
+export function validateDropTarget(
+  draggedId: string | null | undefined,
+  target: Note,
+  allNotes: Note[],
+): DropValidationResult {
+  if (!draggedId) {
+    return { valid: false, reason: 'missing-id' };
+  }
+  if (draggedId === target.id) {
+    return { valid: false, reason: 'self-drop' };
+  }
+  if (!target.isFolder) {
+    return { valid: false, reason: 'not-folder' };
+  }
+  // Walk up from target; if we ever pass the dragged note, the target is a descendant of dragged.
+  let currentParent: string | null = target.parentId;
+  const byId = new Map(allNotes.map((n) => [n.id, n]));
+  while (currentParent) {
+    if (currentParent === draggedId) {
+      return { valid: false, reason: 'descendant' };
+    }
+    const parent: Note | undefined = byId.get(currentParent);
+    currentParent = parent?.parentId ?? null;
+  }
+  return { valid: true };
+}
+
+/**
+ * Returns the partial updates needed to re-parent a dragged note into target.
+ * The caller is responsible for the actual db writes.
+ */
+export function computeDropUpdates(
+  draggedId: string,
+  target: Note,
+  allNotes: Note[],
+  now: number = Date.now(),
+): { dragged: Partial<Note>; target: Partial<Note> | null } {
+  const kids = allNotes.filter((n) => n.parentId === target.id);
+  const maxOrder = kids.length > 0 ? Math.max(...kids.map((k) => k.order)) : now;
+  return {
+    dragged: { parentId: target.id, order: maxOrder + 10 },
+    target: target.isExpanded ? null : { isExpanded: true },
+  };
+}
+
+/**
+ * Result of evaluating move up/down.
+ */
+export interface MoveResult {
+  canMove: boolean;
+  other?: Note;
+}
+
+/**
+ * Find the sibling that the given note should swap with to move up or down.
+ * Returns canMove=false if already at an edge (top for 'up', bottom for 'down').
+ */
+export function findMoveSibling(
+  allNotes: Note[],
+  noteId: string,
+  direction: 'up' | 'down',
+): MoveResult {
+  const subject = allNotes.find((n) => n.id === noteId);
+  if (!subject) return { canMove: false };
+
+  const siblings = allNotes
+    .filter((n) => n.parentId === subject.parentId)
+    .sort((a, b) => a.order - b.order);
+  const myIndex = siblings.findIndex((n) => n.id === noteId);
+  if (myIndex < 0) return { canMove: false };
+
+  if (direction === 'up') {
+    if (myIndex === 0) return { canMove: false };
+    return { canMove: true, other: siblings[myIndex - 1] };
+  } else {
+    if (myIndex >= siblings.length - 1) return { canMove: false };
+    return { canMove: true, other: siblings[myIndex + 1] };
+  }
+}
+
+/**
+ * Returns Partial<Note> updates to swap the `order` field between two notes.
+ * Handles the edge case where two notes have the same order by forcing a +1/-1 nudge.
+ */
+export function computeOrderSwap(
+  current: Note,
+  other: Note,
+  direction: 'up' | 'down',
+): { [id: string]: Partial<Note> } {
+  let newCurrentOrder = other.order;
+  let newOtherOrder = current.order;
+  if (newCurrentOrder === newOtherOrder) {
+    newOtherOrder += direction === 'up' ? -1 : 1;
+  }
+  return {
+    [current.id]: { order: newCurrentOrder },
+    [other.id]: { order: newOtherOrder },
+  };
+}
+
+/**
+ * Recursively collects the ids of all descendants of `rootId` (NOT including rootId itself).
+ * The returned list can be passed to `db.notes.bulkDelete()` along with rootId for a recursive delete.
+ */
+export function collectDescendants(
+  allNotes: Note[],
+  rootId: string,
+): string[] {
+  const out: string[] = [];
+  const walk = (parentId: string) => {
+    const kids = allNotes.filter((n) => n.parentId === parentId);
+    for (const kid of kids) {
+      out.push(kid.id);
+      walk(kid.id);
+    }
+  };
+  walk(rootId);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Tree flattening (powers the virtualized TreeView)
+//
+// The recursive TreeNode render used to walk the parent-child graph at
+// render time, so every useLiveQuery tick produced O(notes) React nodes.
+// flattenTree produces a flat list of `FlatTreeItem`s in a single O(N) pass
+// (Map build + one DFS). Children of collapsed folders are pruned at the
+// DFS step — so a tree with 5000 notes but 10 expanded folders still
+// flattens to a short render-time list.
+//
+// Used by TreeView.tsx; also a target for unit tests in tree-ops.test.ts.
+// ---------------------------------------------------------------------------
+
+/**
+ * Flat row representation emitted by `flattenTree`. Carries everything a
+ * row needs to render without re-walking the parent-child graph.
+ */
+export interface FlatTreeItem {
+  note: Note;
+  /** Depth in the visible (post-collapse-pruning) tree. */
+  depth: number;
+  /** True iff this row has at least one child note (folder or leaf). */
+  hasChildren: boolean;
+  /**
+   * Convenience: `note.isFolder && !!note.isExpanded`. Matches the
+   * semantics the TreeView uses to decide whether to draw an open
+   * chevron vs. a closed one and whether the row is a candidate for
+   * sub-tree rendering.
+   */
+  isOpened: boolean;
+}
+
+/**
+ * Walk `notes` depth-first and emit a render-order list. Rows below a
+ * collapsed folder are pruned early so an extremely collapsed tree
+ * still flattens to a short list.
+ *
+ * Cost: O(N) for the bucketing pass + O(visible) for the DFS (where
+ * `visible` counts only rows whose ancestors are expanded). Children
+ * at each level are sorted by `order` ascending — same invariant the
+ * recursive TreeNode render used to honour.
+ *
+ * Pure: no React, no DOM, no I/O. Safe to call inside a `useMemo` or
+ * test fixture.
+ */
+export function flattenTree(notes: Note[]): FlatTreeItem[] {
+  // Single pass to bucket notes by parentId. parentId comes back as
+  // `null` for root notes; Dexie never writes `undefined` for nullable
+  // columns in this codebase, so a plain null bucket is enough.
+  const byParent = new Map<string | null, Note[]>();
+  for (const n of notes) {
+    const p = n.parentId ?? null;
+    const bucket = byParent.get(p);
+    if (bucket) {
+      bucket.push(n);
+    } else {
+      byParent.set(p, [n]);
+    }
+  }
+  // Sort each bucket once so the DFS emits rows in display order without
+  // doing an extra compare per visit.
+  for (const bucket of byParent.values()) {
+    bucket.sort((a, b) => a.order - b.order);
+  }
+
+  const out: FlatTreeItem[] = [];
+
+  const dfs = (parentId: string | null, depth: number): void => {
+    const kids = byParent.get(parentId);
+    if (!kids) return;
+    for (const kid of kids) {
+      const grands = byParent.get(kid.id);
+      const hasChildren = !!grands && grands.length > 0;
+      const isOpened = !!kid.isFolder && !!kid.isExpanded;
+      out.push({ note: kid, depth, hasChildren, isOpened });
+      // Stop the descent at collapsed folders so toggling close truly
+      // removes the subtree from the rendered DOM, not just hides it.
+      if (isOpened) {
+        dfs(kid.id, depth + 1);
+      }
+    }
+  };
+
+  dfs(null, 0);
+  return out;
+}
