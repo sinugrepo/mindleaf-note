@@ -6,10 +6,3 @@ coverage/
 *.log
 .env*
 !.env.example
-
-# Drizzle migration artifacts (generated, not source)
-apps/server/drizzle/
-
-# Docker volumes (local dev only)
-pgdata/
-minodata/
