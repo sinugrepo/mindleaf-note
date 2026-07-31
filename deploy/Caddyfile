@@ -1,0 +1,150 @@
+# =============================================================================
+# Phase 9 — Caddyfile for Mindleaf production.
+#
+# Topology:
+#   - Caddy serves the static SPA from /var/www/mindleaf/dist (the
+#     output of `apps/web/dist/` rsynced by deploy.sh).
+#   - Caddy reverse-proxies /api/* and /healthz to the Hono backend on
+#     localhost:8787 (managed by systemd `mindleaf.service`).
+#   - Let's Encrypt SSL is automatic — Caddy reads the configured domain,
+#     performs the ACME HTTP-01 challenge, and renews without intervention.
+#
+# Deployment:
+#   - Replace YOUR_DOMAIN below OR set `CADDY_DOMAIN` in your provisioning
+#     script and run `envsubst` before install.
+#   - Validate locally: `caddy validate --config /etc/caddy/Caddyfile`
+#   - Apply: `sudo install -m 644 Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy`
+# =============================================================================
+
+# Match the production domain. Cloudflare DNS A record must point to
+# this VPS. Replace YOUR_DOMAIN with the actual FQDN before install.
+YOUR_DOMAIN {
+    # ------------------------------------------------------------------
+    # Phase 10 — Global security headers.
+    #
+    # These apply to EVERY response from this site (API + SPA + /healthz).
+    # Previously scoped inside the SPA `handle` block only, which caused
+    # a regression: /api/* responses got the weaker HSTS that Hono's
+    # secureHeaders default emits (max-age=15552000, no includeSubDomains)
+    # instead of the stricter max-age=31536000 + includeSubDomains below.
+    # Lifting the headers to the site block fixes that.
+    # ------------------------------------------------------------------
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        # Hide the Caddy version fingerprint.
+        -Server
+    }
+
+    # ------------------------------------------------------------------
+    # API + healthz → backend Hono
+    # ------------------------------------------------------------------
+    # @api matches both the API surface and the unauthenticated healthz
+    # probe (Caddy uses healthz for upstream health checks).
+    @api path /api/* /healthz
+    handle @api {
+        reverse_proxy localhost:8787 {
+            # Caddy polls the backend's own /healthz; unhealthy upstreams
+            # are removed from the rotation by `health_status 2xx` filtering.
+            health_path /healthz
+            health_interval 30s
+            health_timeout 5s
+            health_status 2xx
+            # Carry client IP transparently to the systemd journal for
+            # audit. Hono's request logger writes this to stdout.
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Real-IP {remote_host}
+            # 30s upstream read (large attachment uploads can take a
+            # few seconds; the 150 MB cap in routes/backup.ts is the
+            # hard ceiling).
+            transport http {
+                read_timeout  30s
+                write_timeout 30s
+            }
+        }
+    }
+
+    # ------------------------------------------------------------------
+    # Static SPA assets
+    # ------------------------------------------------------------------
+    # Vite emits content-hashed filenames under /assets/, so the cache
+    # directive below is safe for the lifetime of each build.
+    @hashed_assets path /assets/*
+    handle @hashed_assets {
+        root * /var/www/mindleaf/dist
+        header Cache-Control "public, max-age=31536000, immutable"
+        file_server
+    }
+
+    # ------------------------------------------------------------------
+    # Default: SPA fallback
+    # ------------------------------------------------------------------
+    # Most React-Router paths (e.g. /welcome, /login) are client-side.
+    # If the file doesn't exist on disk, fall back to index.html so the
+    # SPA can hydrate the right route.
+    handle {
+        root * /var/www/mindleaf/dist
+        encode gzip zstd
+        try_files {path} /index.html
+        header {
+            # Phase 10 — Strict Content-Security-Policy for the SPA.
+            #
+            # Why these directives:
+            #   - default-src 'self' — block any fetch/XHR/script/img
+            #     that isn't same-origin. This is the foundation;
+            #     everything below grants narrow exceptions.
+            #   - script-src 'self' — Vite emits a hashed external
+            #     bundle, no inline scripts in production. Adding
+            #     any inline script would be a CSP violation that
+            #     surfaces in devtools and blocks execution.
+            #   - style-src 'self' 'unsafe-inline' — Tailwind v4
+            #     occasionally injects inline style attributes for
+            #     theme reactivity. Single-user app, the XSS risk
+            #     is acceptable; trimming this would require
+            #     auditing every stylesheet.
+            #   - img-src 'self' data: blob: https://*.r2.cloudflarestorage.com
+            #     — The SPA renders note images via presigned GET
+            #     URLs (Phase 4) that point at the R2 hostname.
+            #     `data:` and `blob:` allow inline-image pastes in
+            #     the TipTap editor.
+            #   - connect-src 'self' https://*.r2.cloudflarestorage.com
+            #     — Same R2 reach for presigned PUT (image upload).
+            #   - font-src 'self' data: — Vite's font handling.
+            #   - frame-ancestors 'none' — redundant with
+            #     X-Frame-Options: DENY but is the CSP-native way
+            #     of saying "cannot be embedded".
+            #   - object-src 'none' — block <object>/<embed>/<applet>.
+            #   - base-uri 'self' — block <base href> hijacks.
+            #   - form-action 'self' — block submitting forms to
+            #     foreign origins.
+            #   - upgrade-insecure-requests — belt-and-suspenders.
+            #
+            # No `report-uri` / `report-to` — the maintainer is
+            # alone on the system, log-spam endpoints would burn
+            # VPS bandwidth for zero actionable value.
+            Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.r2.cloudflarestorage.com; font-src 'self' data:; connect-src 'self' https://*.r2.cloudflarestorage.com; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"
+        }
+    }
+
+    # ------------------------------------------------------------------
+    # Logging — emit structured JSON to stdout for journald pickup.
+    # `caddy` writes to local journal by default; this override is
+    # explicit so the format is grep-friendly when triaging.
+    # ------------------------------------------------------------------
+    log {
+        output stdout
+        format console
+        level INFO
+    }
+}
+
+# ----------------------------------------------------------------------
+# Optional: HTTP → HTTPS upgrade + ACME challenge handling is automatic.
+# If you want HSTS preload, append `header Strict-Transport-Security
+# "max-age=31536000; includeSubDomains; preload"` to the handler above and
+# submit your domain to https://hstspreload.org after Caddy has served
+# HTTPS for ≥30 days.
+# ----------------------------------------------------------------------

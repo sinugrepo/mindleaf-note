@@ -1,0 +1,21 @@
+# =============================================================================
+# Phase 9 — Cron entry for daily Mindleaf database backup.
+#
+# Deployment:
+#   - deploy.sh copies this file to /etc/cron.d/mindleaf-backup with
+#     chmod 644 (cron.d files must not be group-writable or world-writable,
+#     else cron refuses to install them).
+#
+# Cadence: 03:00 UTC daily. Off-peak for the single-user app; aligns with
+# typical Cloudflare R2 free-tier write quota reset window.
+#
+# Log destinations:
+#   - stdout → /var/log/mindleaf-backup.log (rotated by syslog)
+#   - MAILTO is optional; if your VPS has a mail relay configured,
+#     failures will email you. Empty MAILTO disables mail.
+# =============================================================================
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+0 3 * * *  mindleaf  /opt/mindleaf/scripts/backup.sh >> /var/log/mindleaf-backup.log 2>&1

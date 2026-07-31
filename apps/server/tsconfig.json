@@ -3,16 +3,16 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "lib": ["ES2022"],
     "skipLibCheck": true,
     "isolatedModules": true,
     "moduleDetection": "force",
+    "esModuleInterop": true,
     "strict": true,
-    "noEmit": true
+    "noEmit": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "baseUrl": "."
   },
-  "files": [],
-  "references": [
-    { "path": "./apps/web" },
-    { "path": "./apps/server" },
-    { "path": "./packages/shared" }
-  ]
+  "include": ["src"]
 }

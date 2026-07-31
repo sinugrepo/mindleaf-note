@@ -1,0 +1,318 @@
+import { Hono } from 'hono';
+import { db, pgClient } from '../db/index.js';
+import { notes } from '../db/schema.js';
+import { eq, inArray, sql } from 'drizzle-orm';
+import { encrypt, decrypt } from '../crypto.js';
+import { randomUUID } from 'node:crypto';
+import { htmlToPlaintext } from '../html-to-text.js';
+import type { NoteDTO } from '@mindleaf/shared';
+import type { AppEnv } from '../env.js';
+
+// ----------------------------------------------------------------------------
+// Phase 6 — tsvector recompilation note
+// ----------------------------------------------------------------------------
+// The `contentTsvector` column is declared in `db/schema.ts` as a customType
+// with `data: string`. Drizzle's TypeScript inference sees only that string,
+// so a raw `sql\`to_tsvector(...)\`` expression fails assignability checks
+// (TS2322). The runtime recognises `SQL` instances as passthrough
+// expressions and postgres-js serializes them as parameterized SQL, so the
+// `as unknown as string` cast lets us write the column with correct on-write
+// recompute behaviour while keeping a typed column for reads. No injection
+// risk: parameters are still bound positionally via the sql template.
+// ----------------------------------------------------------------------------
+
+export const notesRoutes = new Hono<AppEnv>();
+
+/**
+ * Convert a Drizzle `notes` row to a decrypted NoteDTO.
+ * Content is decrypted from `content_ct` + `content_nonce`.
+ */
+function rowToDTO(
+  row: typeof notes.$inferSelect,
+  decryptedContent: string,
+): NoteDTO {
+  return {
+    id: row.id,
+    parentId: row.parentId,
+    title: row.title,
+    content: decryptedContent,
+    isFolder: row.isFolder,
+    isExpanded: row.isExpanded,
+    orderIdx: row.orderIdx,
+    tags: row.tags ?? [],
+    deletedAt: row.deletedAt ? row.deletedAt.getTime() : null,
+    createdAt: row.createdAt.getTime(),
+    updatedAt: row.updatedAt.getTime(),
+    version: row.version,
+  };
+}
+
+/**
+ * Decrypt a note row's content. Returns empty string for notes with
+ * no ciphertext (e.g. freshly created notes before first save).
+ */
+function decryptRow(row: typeof notes.$inferSelect): string {
+  if (!row.contentCt || !row.contentNonce) return '';
+  return decrypt(row.contentCt, row.contentNonce);
+}
+
+/**
+ * Collect a note + all its descendant IDs via a recursive CTE.
+ * Uses postgres-js's parameterized template tag (safe from injection).
+ */
+async function collectDescendantIds(noteId: string): Promise<string[]> {
+  const rows = (await pgClient`
+    WITH RECURSIVE descendants AS (
+      SELECT id FROM notes WHERE id = ${noteId}::uuid
+      UNION ALL
+      SELECT n.id FROM notes n
+      INNER JOIN descendants d ON n.parent_id = d.id
+    )
+    SELECT id FROM descendants
+  `) as { id: string }[];
+  return rows.map((r) => r.id);
+}
+
+// --- GET / (tree: all active notes, decrypted) ---
+notesRoutes.get('/', async (c) => {
+  const rows = await db
+    .select()
+    .from(notes)
+    .where(eq(notes.isDeleted, false));
+
+  const dtos = rows.map((r) => rowToDTO(r, decryptRow(r)));
+  return c.json(dtos);
+});
+
+// --- GET /trash ---
+notesRoutes.get('/trash', async (c) => {
+  const rows = await db
+    .select()
+    .from(notes)
+    .where(eq(notes.isDeleted, true));
+
+  const dtos = rows.map((r) => rowToDTO(r, decryptRow(r)));
+  return c.json(dtos);
+});
+
+// --- GET /:id (single note, decrypted) ---
+notesRoutes.get('/:id', async (c) => {
+  const id = c.req.param('id');
+  const rows = await db.select().from(notes).where(eq(notes.id, id)).limit(1);
+  if (rows.length === 0) {
+    return c.json({ error: 'Note not found' }, 404);
+  }
+  return c.json(rowToDTO(rows[0], decryptRow(rows[0])));
+});
+
+// --- POST / (create note) ---
+notesRoutes.post('/', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const id = body.id ?? randomUUID();
+  const parentId = body.parentId ?? null;
+  const title = body.title ?? '';
+  const isFolder = body.isFolder ?? false;
+  const now = new Date();
+
+  // Encrypt content if provided.
+  let contentCt: Buffer | null = null;
+  let contentNonce: Buffer | null = null;
+  if (typeof body.content === 'string' && body.content.length > 0) {
+    const enc = encrypt(body.content);
+    contentCt = enc.ct;
+    contentNonce = enc.nonce;
+  }
+
+  // Recompute the FTS tsvector (cast rationale: see header comment
+  // block at the top of this file). Computed once and reused for both
+  // the insert and the onConflictDoUpdate branches.
+  const tsvectorSql = sql`to_tsvector('simple', ${title} || ' ' || ${htmlToPlaintext(body.content ?? '')})` as unknown as string;
+
+  const [row] = await db
+    .insert(notes)
+    .values({
+      id,
+      parentId,
+      title,
+      contentCt,
+      contentNonce,
+      isFolder,
+      isExpanded: true,
+      orderIdx: body.orderIdx ?? now.getTime(),
+      tags: body.tags ?? [],
+      createdAt: now,
+      updatedAt: now,
+      version: 1,
+      // Phase 6: tsvector for full text search. Server computes
+      // `to_tsvector('simple', title || ' ' || plaintext(content))`
+      // so the FTS GIN index is up to date immediately. The `as
+      // unknown as string` cast narrows Drizzle's column type (which
+      // declares `data: string`) so a raw SQL expression is
+      // accepted — drizzle's runtime recognises `SQL` instances as
+      // side-effect-free passthroughs and postgres-js serializes
+      // them as parameterized expressions, so there's no injection
+      // risk in the cast.
+      contentTsvector: tsvectorSql,
+    })
+    // Idempotent upsert (Phase 8 — onboarding re-entrancy). If the
+    // same id is re-posted after a network timeout mid-onboarding,
+    // we re-PATCH the row instead of 500-ing on PK violation.
+    // Subsequent sync pulls on other devices still see the latest
+    // content because we bump `version` by 1 on conflict.
+    .onConflictDoUpdate({
+      target: notes.id,
+      set: {
+        parentId,
+        title,
+        contentCt,
+        contentNonce,
+        isFolder,
+        orderIdx: body.orderIdx ?? now.getTime(),
+        tags: body.tags ?? [],
+        updatedAt: now,
+        version: sql`${notes.version} + 1`,
+        contentTsvector: tsvectorSql,
+      },
+    })
+    .returning();
+
+  return c.json(rowToDTO(row, body.content ?? ''), 201);
+});
+
+// --- PATCH /:id (update note with optimistic locking via If-Match) ---
+notesRoutes.patch('/:id', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+
+  // Check If-Match header for optimistic locking.
+  const ifMatch = c.req.header('If-Match');
+  const expectedVersion = ifMatch ? parseInt(ifMatch, 10) : null;
+
+  // Fetch current row.
+  const rows = await db.select().from(notes).where(eq(notes.id, id)).limit(1);
+  if (rows.length === 0) {
+    return c.json({ error: 'Note not found' }, 404);
+  }
+  const current = rows[0];
+
+  // Version conflict check.
+  if (expectedVersion !== null && current.version !== expectedVersion) {
+    return c.json(
+      {
+        error: 'Conflict — note was updated elsewhere',
+        remote: rowToDTO(current, decryptRow(current)),
+      },
+      409,
+    );
+  }
+
+  // Build the update patch.
+  const patch: Partial<typeof notes.$inferInsert> = {
+    updatedAt: new Date(),
+    version: current.version + 1,
+  };
+
+  if (typeof body.title === 'string') patch.title = body.title;
+  if (typeof body.content === 'string') {
+    const enc = encrypt(body.content);
+    patch.contentCt = enc.ct;
+    patch.contentNonce = enc.nonce;
+  }
+  if (typeof body.isExpanded === 'boolean') patch.isExpanded = body.isExpanded;
+  if (typeof body.orderIdx === 'number') patch.orderIdx = body.orderIdx;
+  if (body.parentId !== undefined) patch.parentId = body.parentId;
+  if (Array.isArray(body.tags)) patch.tags = body.tags;
+
+  // Phase 6: if title or content changed, recompute the FTS index. We
+  // use the INCOMING body values when present (so the index matches the
+  // post-update state, not the pre-update state), and fall back to the
+  // current row values otherwise.
+  const titleChanged = typeof body.title === 'string';
+  const contentChanged = typeof body.content === 'string';
+  const effectiveTitle = titleChanged ? body.title : current.title;
+  const effectivePlaintext = contentChanged
+    ? htmlToPlaintext(body.content)
+    : htmlToPlaintext(decryptRow(current));
+  if (titleChanged || contentChanged) {
+    // Same cast rationale as the POST branch above — see comments.
+    patch.contentTsvector = sql`to_tsvector('simple', ${effectiveTitle} || ' ' || ${effectivePlaintext})` as unknown as string;
+  }
+
+
+  const [updated] = await db
+    .update(notes)
+    .set(patch)
+    .where(eq(notes.id, id))
+    .returning();
+
+  // Return the updated DTO with the decrypted content (so the client
+  // can verify what the server now holds).
+  const decryptedContent =
+    typeof body.content === 'string' ? body.content : decryptRow(updated);
+  return c.json(rowToDTO(updated, decryptedContent));
+});
+
+// --- DELETE /:id (soft-delete note + descendants) ---
+// Uses a recursive CTE to collect all descendants, then stamps
+// `is_deleted = true` + `deleted_at = now()` on each.
+notesRoutes.delete('/:id', async (c) => {
+  const id = c.req.param('id');
+  const now = new Date();
+
+  const ids = await collectDescendantIds(id);
+  if (ids.length === 0) {
+    return c.json({ error: 'Note not found' }, 404);
+  }
+
+  // Soft-delete all collected ids using Drizzle's inArray (parameterized).
+  await db
+    .update(notes)
+    .set({ isDeleted: true, deletedAt: now, updatedAt: now })
+    .where(inArray(notes.id, ids));
+
+  return c.json({ ok: true, deleted: ids.length });
+});
+
+// --- POST /:id/restore (restore note + descendants from trash) ---
+notesRoutes.post('/:id/restore', async (c) => {
+  const id = c.req.param('id');
+  const now = new Date();
+
+  const ids = await collectDescendantIds(id);
+  if (ids.length === 0) {
+    return c.json({ error: 'Note not found' }, 404);
+  }
+
+  await db
+    .update(notes)
+    .set({ isDeleted: false, deletedAt: null, updatedAt: now })
+    .where(inArray(notes.id, ids));
+
+  return c.json({ ok: true, restored: ids.length });
+});
+
+// --- POST /:id/permanent (permanently delete from trash) ---
+notesRoutes.post('/:id/permanent', async (c) => {
+  const id = c.req.param('id');
+
+  // Only allow permanent delete on already-trashed notes.
+  const rows = await db
+    .select()
+    .from(notes)
+    .where(eq(notes.id, id))
+    .limit(1);
+
+  if (rows.length === 0) {
+    return c.json({ error: 'Note not found' }, 404);
+  }
+  if (!rows[0].isDeleted) {
+    return c.json({ error: 'Note is not in trash' }, 400);
+  }
+
+  const ids = await collectDescendantIds(id);
+
+  // Hard-delete (cascades to attachments via FK).
+  await db.delete(notes).where(inArray(notes.id, ids));
+
+  return c.json({ ok: true, deleted: ids.length });
+});

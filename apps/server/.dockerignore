@@ -1,0 +1,70 @@
+# Phase 9 — Backend Dockerfile .dockerignore.
+#
+# Backend image builds only apps/server + packages/shared. Frontend is
+# served by Caddy from /var/www/mindleaf/dist on the host, NOT from the
+# backend container. Exclude apps/web source so the build context is
+# small (~5 MB) and COPY commands don't ship unnecessary JS.
+
+# --- VCS metadata ---
+.git
+.gitignore
+.gitattributes
+
+# --- Local-only files ---
+.env
+.env.*
+**/.env
+**/.env.*
+
+# --- node_modules (rebuilt by `npm ci` in the build stage) ---
+node_modules
+**/node_modules
+
+# --- Build outputs (regenerated inside the image) ---
+**/dist
+dist
+**/build
+build
+
+# --- Coverage / lint / test artifacts ---
+coverage
+**/coverage
+.nyc_output
+**/.vitest-cache
+
+# --- Test files (skipped at build; tests run in CI vite not in image) ---
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+**/__tests__
+**/__mocks__
+
+# --- Apps/web source — irrelevant for backend image ---
+apps/web/src
+apps/web/public
+apps/web/index.html
+apps/web/tsconfig.json
+apps/web/vite.config.ts
+apps/web/vitest.config.ts
+
+# --- Development helpers / OS junk ---
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+*.swp
+*.swo
+*.log
+**/*.log
+.eslintcache
+.tsbuildinfo
+**/*.tsbuildinfo
+
+# --- Plan docs / deploy templates (don't ship in image; deploy.sh
+#     copies these to /etc/caddy/ + /etc/systemd/ at deploy time) ---
+CLOUD_MIGRATION_PLAN.md
+README.md
+deploy/
+docker-compose.yml
+scripts/verify-index-limit.mjs
