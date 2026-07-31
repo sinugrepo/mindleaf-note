@@ -7,12 +7,10 @@
     "isolatedModules": true,
     "moduleDetection": "force",
     "strict": true,
-    "noEmit": true
+    "composite": true,
+    "declaration": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
   },
-  "files": [],
-  "references": [
-    { "path": "./apps/web" },
-    { "path": "./apps/server" },
-    { "path": "./packages/shared" }
-  ]
+  "include": ["src"]
 }

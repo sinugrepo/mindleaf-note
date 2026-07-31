@@ -1,0 +1,150 @@
+# =============================================================================
+# Phase 9 — systemd unit for the Mindleaf Hono backend.
+#
+# Deployment:
+#   - deploy.sh copies this file to `/etc/systemd/system/mindleaf.service`
+#     then runs `sudo systemctl daemon-reload && sudo systemctl restart mindleaf`.
+#
+# Operational model:
+#   - Single-user app → restart-on-failure is acceptable; no need for the
+#     complexity of socket activation. `Type=simple` is correct.
+#   - Postgres is required (`Requires=postgresql.service`); the backend
+#     refuses to start without a DB connection (Drizzle connection in
+#     db/index.ts throws on first miss).
+#   - Secrets live in `/opt/mindleaf/.env` (chmod 600, owner mindleaf)
+#     — EnvironmentFile reads them without exposing via the unit's own
+#     environment (less surprising in `ps`/`systemctl show`).
+#
+# Hardening baseline (systemd ≥ 240):
+#   - NoNewPrivileges — drop suid/sgid elevation.
+#   - ProtectSystem=strict — read-only /usr, /boot, /etc; only /opt,
+#     /dev, /proc, /sys untouched (and /tmp via PrivateTmp).
+#   - ProtectHome=true — service cannot read /root, /home/<other>.
+#   - RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX — no exotic AF.
+#   - RestrictNamespaces / RestrictRealtime / RestrictSUIDSGID / LockPersonality
+#     — defense in depth against container escapes and weird syscall abuse.
+#   - CapabilityBoundingSet= — Node doesn't need ANY Linux capabilities.
+#   - MemoryDenyWriteExecute=false — required for V8 JIT (it mmaps RWX).
+#     Disable on hardened JVMs; keep false for Node.
+# =============================================================================
+
+[Unit]
+Description=Mindleaf backend (Hono + Drizzle + R2)
+Documentation=https://github.com/sinugrepo/mindleaf-note
+After=network-online.target
+Wants=network-online.target
+# Backend won't start if Postgres is down — connection pool retries
+# would spam the journal. Reduce noise by depending on postgresql.service
+# starting first (Ubuntu/Debian postgresql-16 apt unit naming).
+Requires=postgresql.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+
+# --- Identity ---
+# `mindleaf` user/group is created by bootstrap.sh (Phase 9).
+User=mindleaf
+Group=mindleaf
+
+# --- Working directory + entrypoint ---
+# WorkingDirectory=/opt/mindleaf is the monorepo root so that
+# node_modules/@mindleaf/shared (the workspace symlink) resolves.
+WorkingDirectory=/opt/mindleaf
+EnvironmentFile=/opt/mindleaf/.env
+Environment=NODE_ENV=production
+
+# tsc compiles `index.ts` → `dist/index.js` (per package.json `"main"`).
+# Run with `node` (Node 22 ships as /usr/bin/node on Ubuntu 24.04 LTS).
+ExecStart=/usr/bin/node /opt/mindleaf/apps/server/dist/index.js
+ExecStartPre=/usr/bin/test -f /opt/mindleaf/apps/server/dist/index.js
+
+# Graceful reload isn't supported by Hono yet — HUP would just kill the
+# process and systemd would restart it, losing in-flight requests.
+# Keep reload = full stop+start.
+ExecReload=/bin/kill -HUP $MAINPID
+
+# --- Lifecycle ---
+Restart=on-failure
+RestartSec=5s
+# 20s of FAQ time on `systemctl stop` before SIGKILL. Postgres pool
+# drains, presigned-URL inflight calls complete; very short timeout
+# because single-user app — nobody else is using the server right now.
+TimeoutStopSec=20
+KillMode=mixed
+KillSignal=SIGTERM
+
+# =====================================================================
+# Security hardening (Linux namespaces + capability drop + syscalls).
+# =====================================================================
+
+# Drop setuid/setgid entirely — Node doesn't need it.
+NoNewPrivileges=true
+
+# Lock down syscall surface to the systemd "system service" group.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+LockPersonality=true
+
+# Restrict unusual namespaces + realtime scheduling + address families.
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Filesystem: read-only /usr /etc /boot; /opt writable so backend can
+# drop dist.bak during deploy rollback. /home /root completely hidden.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+
+# Drop every capability. Node doesn't need CAP_NET_BIND_SERVICE (we
+# listen on 8787 ≥1024) or any of the others.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# V8 JIT requires RWX for code cache; deny-by-default would hard-crash
+# Node on start. Set false (the default for newer releases) to allow
+# JIT. If you ever switch to a non-JIT runtime, harden this to `true`.
+MemoryDenyWriteExecute=false
+
+# =====================================================================
+# Resource limits
+# =====================================================================
+
+# Single-user app: 1 backend process is enough. Files limit is high
+# because Hono opens a few sockets (postgres pool max=5, listeners,
+# TLS to R2). 65536 is the Linux default-cap on modern kernels.
+LimitNOFILE=65536
+
+# Cap RSS at 768 MB; OOM-killer prefers this service (-100 means
+# "last to die" relative to other services).
+MemoryHigh=512M
+MemoryMax=768M
+OOMPolicy=stop
+OOMScoreAdjust=-100
+
+# Single CPU = single-user app. Adjust to 200% if Postgres+Node share.
+CPUQuota=100%
+
+# Process tree depth limit (subprocesses for tsx child etc.). 128 is
+# well above what Hono needs.
+TasksMax=128
+
+# =====================================================================
+# Logging — go to journald, picked up by `journalctl -u mindleaf`.
+# =====================================================================
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mindleaf
+
+[Install]
+WantedBy=multi-user.target
