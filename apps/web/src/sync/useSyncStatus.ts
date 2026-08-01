@@ -2,7 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
 import { useState, useEffect } from 'react';
 
-export type SyncStatus = 'synced' | 'pending' | 'offline' | 'conflicted' | 'remote_missing' | 'remote_recovering';
+export type SyncStatus = 'synced' | 'pending' | 'offline' | 'conflicted' | 'remote_missing' | 'remote_recovering' | 'recovery_required';
 
 export interface SyncStatusInfo {
   status: SyncStatus;
@@ -11,6 +11,8 @@ export interface SyncStatusInfo {
   remoteMissingCount: number;
   remoteRecoveringCount: number;
   failedCount: number;
+  /** Server no longer retains tombstones old enough for this device cursor. */
+  recoveryRequired: boolean;
   isOnline: boolean;
 }
 
@@ -57,6 +59,12 @@ export function useSyncStatus(): SyncStatusInfo {
     0,
   );
 
+  const recoveryRequired = useLiveQuery(
+    async () => (await db.syncState.get('syncRecoveryRequired'))?.value === 'true',
+    [],
+    false,
+  );
+
   const [isOnline, setIsOnline] = useState(
     typeof navigator !== 'undefined' ? navigator.onLine : true,
   );
@@ -76,6 +84,7 @@ export function useSyncStatus(): SyncStatusInfo {
   const cc = conflictedCount ?? 0;
   const rmc = remoteMissingCount ?? 0;
   const rrc = remoteRecoveringCount ?? 0;
+  const needsRecovery = recoveryRequired ?? false;
   const fc = pc; // failed + pending are both in the 'pending'/'failed' bucket
 
   let status: SyncStatus;
@@ -87,6 +96,8 @@ export function useSyncStatus(): SyncStatusInfo {
     status = 'remote_recovering';
   } else if (rmc > 0) {
     status = 'remote_missing';
+  } else if (needsRecovery) {
+    status = 'recovery_required';
   } else if (pc > 0) {
     status = 'pending';
   } else {
@@ -100,6 +111,7 @@ export function useSyncStatus(): SyncStatusInfo {
     remoteMissingCount: rmc,
     remoteRecoveringCount: rrc,
     failedCount: fc,
+    recoveryRequired: needsRecovery,
     isOnline,
   };
 }

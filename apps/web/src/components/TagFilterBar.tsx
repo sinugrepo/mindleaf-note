@@ -29,8 +29,14 @@ export function TagFilterBar() {
   // items; this matches the existing `treeCount` / `trashCount`
   // selectors' filtering policy.
   const tags = useLiveQuery(async () => {
-    const all = await db.notes.toArray();
-    return extractAllTags(all.filter((n) => !isTrashedNote(n)), 25);
+    const activeNotes: import('../types').Note[] = [];
+    // Stream rows through Dexie instead of materializing the whole notes
+    // table at once. The tag catalogue still has the same semantics, but
+    // uses less peak memory as the local database grows.
+    await db.notes.each((note) => {
+      if (!isTrashedNote(note)) activeNotes.push(note);
+    });
+    return extractAllTags(activeNotes, 25);
   }, []);
 
   if (tags === undefined) {

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { db, resetStaleRemoteRecoveries, type PendingMutation } from '../db/db';
+import { clearSyncRecoveryRequired, isSyncRecoveryRequired } from '../sync/queue';
 import { discardAllSyncHistory, discardSyncMutation } from '../sync/retry';
 
 function makeNote(id: string) {
@@ -43,6 +44,15 @@ beforeEach(async () => {
 });
 
 describe('sync recovery lifecycle', () => {
+  it('persists the cursor-expiry gate until an explicit recovery clears it', async () => {
+    expect(await isSyncRecoveryRequired()).toBe(false);
+    await db.syncState.put({ key: 'syncRecoveryRequired', value: 'true' });
+    expect(await isSyncRecoveryRequired()).toBe(true);
+
+    await clearSyncRecoveryRequired();
+    expect(await isSyncRecoveryRequired()).toBe(false);
+  });
+
   it('does not treat a remote-missing attachment as a note when clearing history', async () => {
     await db.notes.add(makeNote('note-1'));
     await db.attachments.add({
