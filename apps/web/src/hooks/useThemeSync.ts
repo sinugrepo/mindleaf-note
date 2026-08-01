@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useLayoutEffect } from 'react';
 import { Theme } from '../types';
 
 /**
@@ -13,7 +13,7 @@ import { Theme } from '../types';
  * covers useStore behavior, not the DOM class list itself).
  */
 export function useThemeSync(theme: Theme): void {
-  useEffect(() => {
+  useLayoutEffect(() => {
     const root = window.document.documentElement;
     root.classList.remove('light', 'dark');
 

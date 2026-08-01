@@ -21,6 +21,9 @@ import { TrashView } from './TrashView';
 import { SearchResults } from './SearchResults';
 import { TagFilterBar } from './TagFilterBar';
 import { SortDropdown } from './SortDropdown';
+import { BulkActions } from './BulkActions';
+import { SavedViews } from './SavedViews';
+import { SyncStatus } from './SyncStatus';
 import { db } from '../db/db';
 import { Theme } from '../types';
 import { cn } from '../lib/utils';
@@ -269,6 +272,9 @@ export function Sidebar({ className, onClose, onLogout }: SidebarProps) {
       <div className="px-3 py-1 shrink-0 flex items-center justify-end">
         <SortDropdown visible={!searchQuery && !showTrash} />
       </div>
+      {!searchQuery && !showTrash && <SavedViews />}
+
+      {!searchQuery && !showTrash && <BulkActions />}
 
       {/* Main List Area */}
       <div className="flex-1 min-h-0 px-2">
@@ -283,7 +289,8 @@ export function Sidebar({ className, onClose, onLogout }: SidebarProps) {
 
       {/* Footer Settings */}
       <div className="p-3 border-t border-white/60 dark:border-white/5 flex justify-between items-center text-zinc-500 dark:text-zinc-400 shrink-0">
-        <div className="flex gap-1">
+        <div className="flex gap-1 items-center">
+          <SyncStatus />
           {onLogout && (
             <button
               type="button"

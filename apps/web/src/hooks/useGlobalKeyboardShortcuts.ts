@@ -12,6 +12,12 @@ export interface GlobalShortcuts {
   onNewChildNote?: () => void | Promise<void>;
   /** Ctrl+F — focus the global search input. */
   onFocusSearch?: () => void;
+  /** Ctrl+K — open the command palette. */
+  onOpenCommandPalette?: () => void;
+  /** Ctrl/Cmd+Z — undo the latest tree/title/tag operation. */
+  onUndo?: () => void | Promise<void>;
+  /** Ctrl/Cmd+Y or Ctrl/Cmd+Shift+Z — redo the latest tree/title/tag operation. */
+  onRedo?: () => void | Promise<void>;
 }
 
 /**
@@ -44,14 +50,31 @@ export function useGlobalKeyboardShortcuts(handlers: GlobalShortcuts): void {
     const onKeyDown = (e: KeyboardEvent) => {
       // Always intercept Ctrl+S so the browser doesn't show its save
       // dialog / try to save the page HTML. Autosave handles persistence.
-      if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 's') {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 's') {
         e.preventDefault();
         return;
       }
 
       const key = e.key.toLowerCase();
+      const modKey = e.ctrlKey || e.metaKey;
 
-      if (e.ctrlKey && !e.shiftKey && key === 'n') {
+      const isTyping = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName || '') || document.activeElement?.getAttribute('contenteditable') === 'true';
+      if (modKey && !e.altKey && key === 'z' && !isTyping) {
+        if (e.shiftKey ? handlers.onRedo : handlers.onUndo) {
+          e.preventDefault();
+          void (e.shiftKey ? handlers.onRedo : handlers.onUndo)?.();
+        }
+        return;
+      }
+      if (modKey && !e.altKey && key === 'y' && !isTyping) {
+        if (handlers.onRedo) {
+          e.preventDefault();
+          void handlers.onRedo();
+        }
+        return;
+      }
+
+      if (modKey && !e.shiftKey && key === 'n') {
         if (handlers.onNewRootNote) {
           e.preventDefault();
           handlers.onNewRootNote();
@@ -59,7 +82,7 @@ export function useGlobalKeyboardShortcuts(handlers: GlobalShortcuts): void {
         return;
       }
 
-      if (e.ctrlKey && e.shiftKey && key === 'n') {
+      if (modKey && e.shiftKey && key === 'n') {
         if (handlers.onNewChildNote) {
           e.preventDefault();
           handlers.onNewChildNote();
@@ -67,12 +90,19 @@ export function useGlobalKeyboardShortcuts(handlers: GlobalShortcuts): void {
         return;
       }
 
-      if (e.ctrlKey && !e.shiftKey && key === 'f') {
+      if (modKey && !e.shiftKey && key === 'f') {
         if (handlers.onFocusSearch) {
           e.preventDefault();
           handlers.onFocusSearch();
         }
         return;
+      }
+
+      if (modKey && !e.shiftKey && key === 'k') {
+        if (handlers.onOpenCommandPalette) {
+          e.preventDefault();
+          handlers.onOpenCommandPalette();
+        }
       }
     };
 

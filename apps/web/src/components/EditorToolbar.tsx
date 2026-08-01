@@ -61,6 +61,25 @@ export function EditorToolbar({ editor }: { editor: TiptapEditor | null }) {
         onClick={() => editor.chain().focus().toggleCodeBlock().run()}
         label="< />"
       />
+      <div className="w-px bg-zinc-200 dark:bg-zinc-700 mx-1"></div>
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().undo().run()}
+        disabled={!editor.can().chain().focus().undo().run()}
+        title="Undo (Ctrl+Z)"
+        className="px-2 py-1 text-xs rounded hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors disabled:opacity-30"
+      >
+        Undo
+      </button>
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().redo().run()}
+        disabled={!editor.can().chain().focus().redo().run()}
+        title="Redo (Ctrl+Y)"
+        className="px-2 py-1 text-xs rounded hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors disabled:opacity-30"
+      >
+        Redo
+      </button>
     </div>
   );
 }
@@ -78,6 +97,7 @@ function FormatButton({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       className={cn(
         'px-2 py-1 text-xs rounded hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors',

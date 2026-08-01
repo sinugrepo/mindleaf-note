@@ -12,7 +12,8 @@ import { Note } from '../types';
  *   - extractAllTags               : compile the unique tag set WITH
  *     note counts so the sidebar chip filter shows what exists.
  *   - sortRootComparator / sortRootNotes : root-only sort applied in
- *     flattenTree to avoid messing with sub-tree `order`.
+ *     flattenTree to avoid messing with sub-tree `order`, with an
+ *     explicit ascending/descending direction.
  *
  * All helpers are sync and pure — safe to call from useMemo deps or
  * Vitest unit tests without React or Dexie.
@@ -155,14 +156,17 @@ export function filterActiveNotesByTagSet(
 
 /**
  * Sort modes for the root-level grouping of the tree. `manual`
- * means "respect the drag order — i.e. read `note.order`
- * ascending". The other modes are computed from non-order fields.
+ * means "respect the drag order — i.e. read `note.order`". The
+ * direction is explicit for every mode.
  *
  * Sub-tree order is NEVER re-sorted; only the children of
  * `parentId: null` are touched. Existing tests rely on sub-tree
  * sibling order being mutated only by `Move Up` / `Move Down`.
  */
 export type SortMode = 'manual' | 'updatedAt' | 'title' | 'createdAt';
+export type SortDirection = 'asc' | 'desc';
+
+export const DEFAULT_SORT_DIRECTION: SortDirection = 'asc';
 
 /**
  * Default sort mode applied to root notes — matches the legacy
@@ -171,19 +175,19 @@ export type SortMode = 'manual' | 'updatedAt' | 'title' | 'createdAt';
 export const DEFAULT_SORT_MODE: SortMode = 'manual';
 
 /**
- * Comparators indexed by SortMode. Returns a function suitable for
- * `Array.prototype.sort`. String comparison is locale-aware, case-
- * insensitive (so "zebra" sorts before "Apple"). Numeric fields
- * sort descending (most-recent first), which matches what users
- * usually want for "Updated" and "Created".
+ * Comparators indexed by SortMode. These are the ascending/base
+ * comparators; `sortRootNotes` applies the requested direction.
+ * String comparison is locale-aware, case-insensitive. Numeric fields
+ * use their natural numeric order, so the UI can consistently invert
+ * every mode for descending.
  */
 export const ROOT_SORT_COMPARATORS: Record<
   SortMode,
   (a: Note, b: Note) => number
 > = {
   manual: (a, b) => a.order - b.order,
-  updatedAt: (a, b) => b.updatedAt - a.updatedAt,
-  createdAt: (a, b) => b.createdAt - a.createdAt,
+  updatedAt: (a, b) => a.updatedAt - b.updatedAt,
+  createdAt: (a, b) => a.createdAt - b.createdAt,
   title: (a, b) =>
     (a.title || '').localeCompare(b.title || '', undefined, {
       sensitivity: 'base',
@@ -196,8 +200,13 @@ export const ROOT_SORT_COMPARATORS: Record<
  * to chunk-sort only the root-level subset so sub-tree order is
  * preserved.
  */
-export function sortRootNotes(notes: Note[], mode: SortMode): Note[] {
-  return [...notes].sort(ROOT_SORT_COMPARATORS[mode]);
+export function sortRootNotes(
+  notes: Note[],
+  mode: SortMode,
+  direction: SortDirection = DEFAULT_SORT_DIRECTION,
+): Note[] {
+  const multiplier = direction === 'asc' ? 1 : -1;
+  return [...notes].sort((a, b) => multiplier * ROOT_SORT_COMPARATORS[mode](a, b));
 }
 
 // ---------------------------------------------------------------------------

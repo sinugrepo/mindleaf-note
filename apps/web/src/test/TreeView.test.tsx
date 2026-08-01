@@ -1,6 +1,15 @@
 import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
+
+vi.mock('../sync/queue', () => ({
+  queuedPatchNote: vi.fn().mockResolvedValue(undefined),
+  queuedCreateNote: vi.fn().mockImplementation(async (note) => note),
+  queuedDeleteNote: vi.fn().mockResolvedValue(undefined),
+  queuedRestoreNote: vi.fn().mockResolvedValue(undefined),
+  queuedPermanentDeleteNote: vi.fn().mockResolvedValue(undefined),
+  queuedImportNotes: vi.fn().mockResolvedValue(undefined),
+}));
 
 // Mock dexie-react-hooks to control what useLiveQuery returns
 let liveNotes: Note[] | undefined = [];
@@ -26,6 +35,7 @@ vi.mock('../db/db', () => ({
 import { TreeView } from '../components/TreeView';
 import { useStore } from '../store/useStore';
 import { Note } from '../types';
+import { queuedPatchNote } from '../sync/queue';
 
 function makeNote(partial: Partial<Note>): Note {
   return {
@@ -48,7 +58,15 @@ function seedNotes(notes: Note[]) {
 describe('TreeView (smoke)', () => {
   beforeEach(() => {
     localStorage.clear();
-    useStore.setState({ activeNoteId: null, searchQuery: '', theme: 'system' });
+    vi.clearAllMocks();
+    useStore.setState({
+      activeNoteId: null,
+      searchQuery: '',
+      theme: 'system',
+      sortMode: 'manual',
+      sortDirection: 'asc',
+      tagFilter: [],
+    });
   });
 
   describe('rendering', () => {
@@ -112,6 +130,75 @@ describe('TreeView (smoke)', () => {
     // (drag/drop validation, move up/down swapping, recursive delete).
     // They live in test/tree-ops.test.ts so we just verify here that
     // TreeView imports the helpers (a real smoke check on integration).
+
+    it('uses hidden children when dropping into a collapsed folder', async () => {
+      const folder = makeNote({
+        id: 'folder',
+        title: 'Collapsed Folder',
+        isFolder: true,
+        isExpanded: false,
+        order: 1,
+      });
+      const hiddenChild = makeNote({
+        id: 'hidden-child',
+        title: 'Hidden Child',
+        parentId: 'folder',
+        order: 100,
+      });
+      const dragged = makeNote({ id: 'dragged', title: 'Dragged', order: 2 });
+      seedNotes([folder, hiddenChild, dragged]);
+      render(<TreeView />);
+
+      const source = screen.getByText('Dragged').closest('.group') as HTMLElement;
+      const target = screen.getByText('Collapsed Folder').closest('.group') as HTMLElement;
+      const dataTransfer = {
+        types: ['text/plain'],
+        setData: vi.fn(),
+        getData: vi.fn(() => 'dragged'),
+      };
+
+      fireEvent.dragStart(source, { dataTransfer });
+      fireEvent.drop(target, { dataTransfer });
+      await vi.waitFor(() => {
+        expect(queuedPatchNote).toHaveBeenCalledWith('dragged', {
+          parentId: 'folder',
+          order: 110,
+        });
+      });
+      expect(queuedPatchNote).toHaveBeenCalledWith('folder', { isExpanded: true });
+    });
+
+    it('opens the action menu from a native right click', () => {
+      seedNotes([makeNote({ id: 'a', title: 'Aye', order: 1 })]);
+      render(<TreeView />);
+
+      const row = screen.getByText('Aye').closest('.group') as HTMLElement;
+      fireEvent.contextMenu(row, { clientX: 120, clientY: 80 });
+
+      expect(screen.getByRole('menu', { name: /Actions for Aye/i })).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: /Add Child Note/i })).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: /Add Folder/i })).toBeInTheDocument();
+      expect(useStore.getState().activeNoteId).toBe('a');
+    });
+
+    it('supports keyboard navigation and Escape in the action menu', () => {
+      seedNotes([makeNote({ id: 'a', title: 'Aye', order: 1 })]);
+      render(<TreeView />);
+
+      const row = screen.getByText('Aye').closest('.group') as HTMLElement;
+      fireEvent.contextMenu(row, { clientX: 120, clientY: 80 });
+      const menu = screen.getByRole('menu', { name: /Actions for Aye/i });
+      const items = screen.getAllByRole('menuitem');
+
+      expect(document.activeElement).toBe(items[0]);
+      fireEvent.keyDown(menu, { key: 'ArrowDown' });
+      expect(document.activeElement).toBe(items[1]);
+      fireEvent.keyDown(menu, { key: 'End' });
+      expect(document.activeElement).toBe(items[items.length - 1]);
+      fireEvent.keyDown(menu, { key: 'Escape' });
+
+      expect(screen.queryByRole('menu', { name: /Actions for Aye/i })).not.toBeInTheDocument();
+    });
 
     it('imports and uses tree-ops helpers (integration check via state)', () => {
       // Seed a deep tree (mirror of one of the integration scenarios)

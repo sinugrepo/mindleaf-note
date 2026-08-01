@@ -8,6 +8,7 @@ import { cn } from '../lib/utils';
 import { Search } from 'lucide-react';
 import { isActiveNote } from '../lib/notes';
 import { queuedPatchNote } from '../sync/queue';
+import { htmlToSnippet } from '../lib/sanitize';
 
 export function SearchResults() {
   const { searchQuery, setActiveNoteId } = useStore();
@@ -96,9 +97,9 @@ export function SearchResults() {
                 {item.title || 'Untitled'}
               </div>
               {item.content && (
-                <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-2"
-                     dangerouslySetInnerHTML={{ __html: item.content.replace(/<[^>]+>/g, ' ') }} 
-                />
+                <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-2">
+                  {htmlToSnippet(item.content)}
+                </div>
               )}
             </button>
           );

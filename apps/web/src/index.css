@@ -1,7 +1,20 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Tailwind v4 defaults `dark:` to the OS media query. The app also
+   supports an explicit user preference, so make the variant follow the
+   class written by useThemeSync / the early bootstrap script. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @layer base {
+  html.light {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
   body {
     @apply text-zinc-900;
     background-color: #f0f9ff;
