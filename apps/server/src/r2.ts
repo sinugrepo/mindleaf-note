@@ -82,6 +82,16 @@ export async function presignGet(r2Key: string): Promise<string> {
 }
 
 /**
+ * Fetch an object from R2 for server-side backup export.
+ * Keep SDK command execution in the storage module rather than routes.
+ */
+export async function getR2Object(r2Key: string) {
+  if (!s3Client) throw new Error('R2 client not configured');
+  const command = new GetObjectCommand({ Bucket: R2_BUCKET, Key: r2Key });
+  return s3Client.send(command);
+}
+
+/**
  * Map a MIME type to a file extension for the R2 key. Falls back to `bin`.
  */
 function mimeToExtension(mime: string): string {

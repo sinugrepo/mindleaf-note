@@ -82,18 +82,41 @@ uploadRoutes.post(
     }
 
     const userId = c.get('userId');
-    const attachmentId = randomUUID();
-    const r2Key = generateR2Key(userId, body.mime);
+    const attachmentId = body.attachmentId ?? randomUUID();
+    const requestedR2Key = generateR2Key(userId, body.mime);
 
-    // Insert the attachment row (r2Key set, blob not yet uploaded).
-    await db.insert(attachments).values({
-      id: attachmentId,
-      noteId: body.noteId,
-      r2Key,
-      mime: body.mime,
-      name: body.filename,
-      sizeBytes: body.sizeBytes,
-    });
+    // The browser owns the attachment UUID and embeds it in the note HTML.
+    // Reusing that UUID on retries keeps IndexedDB, Postgres, and the R2
+    // metadata row aligned. A lost response can therefore safely repeat
+    // presign without creating an orphan row with a different id.
+    await db
+      .insert(attachments)
+      .values({
+        id: attachmentId,
+        noteId: body.noteId,
+        r2Key: requestedR2Key,
+        mime: body.mime,
+        name: body.filename,
+        sizeBytes: body.sizeBytes,
+      })
+      .onConflictDoNothing();
+
+    const rows = await db
+      .select()
+      .from(attachments)
+      .where(eq(attachments.id, attachmentId))
+      .limit(1);
+    const stored = rows[0];
+    if (!stored || stored.noteId !== body.noteId) {
+      return c.json({ error: 'Attachment id is already assigned to another note' }, 409);
+    }
+    const r2Key = stored.r2Key ?? requestedR2Key;
+    if (!stored.r2Key) {
+      await db
+        .update(attachments)
+        .set({ r2Key })
+        .where(eq(attachments.id, attachmentId));
+    }
 
     const uploadUrl = await presignPut(r2Key);
 

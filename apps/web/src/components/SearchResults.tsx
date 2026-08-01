@@ -7,6 +7,7 @@ import { Note } from '../types';
 import { cn } from '../lib/utils';
 import { Search } from 'lucide-react';
 import { isActiveNote } from '../lib/notes';
+import { queuedPatchNote } from '../sync/queue';
 
 export function SearchResults() {
   const { searchQuery, setActiveNoteId } = useStore();
@@ -53,7 +54,7 @@ export function SearchResults() {
     // Need to expand parents to ensure it's visible in tree when search is cleared
     let currentNote = notes.find(n => n.id === noteId);
     while (currentNote && currentNote.parentId) {
-      await db.notes.update(currentNote.parentId, { isExpanded: true });
+      await queuedPatchNote(currentNote.parentId, { isExpanded: true });
       currentNote = notes.find(n => n.id === currentNote.parentId);
     }
     

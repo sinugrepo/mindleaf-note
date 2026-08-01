@@ -88,6 +88,10 @@ export async function bulkUploadNotes(
           lastSyncedAt: Date.now(),
           version: dto.version,
         });
+        // The pre-auth local edit was already uploaded directly by this
+        // wizard. Remove its queued create/patch mutations so the regular
+        // drainer does not replay the same note after the wizard closes.
+        await db.pendingMutations.where('resourceId').equals(note.id).delete();
       }),
     );
     for (const r of results) {
@@ -127,7 +131,8 @@ export async function bulkUploadAttachments(
     const results = await Promise.allSettled(
       chunk.map(async (att) => {
         // 1. presign — server creates an attachment row pre-uploads.
-        const { attachmentId, uploadUrl } = await api.presignUpload({
+        const { attachmentId, uploadUrl, r2Key } = await api.presignUpload({
+          attachmentId: att.id,
           filename: att.name || `${uuidv4()}.bin`,
           mime: att.mime,
           sizeBytes: att.blob.size,
@@ -146,8 +151,11 @@ export async function bulkUploadAttachments(
         await api.completeUpload(attachmentId);
         await db.attachments.update(att.id, {
           syncStatus: 'synced',
-          r2Key: `uploaded:${attachmentId}`,
+          r2Key,
         });
+        // This attachment was uploaded directly by onboarding; prevent
+        // the old offline queue entry from uploading it a second time.
+        await db.pendingMutations.where('resourceId').equals(att.id).delete();
       }),
     );
     for (const r of results) {

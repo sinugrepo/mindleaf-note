@@ -1,45 +1,44 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Phase 9 — Production deployer for Mindleaf.
+# Mindleaf VPS-local deployer.
 #
-# Runs from your LOCAL machine, pushes to the VPS via SSH + rsync.
-# Idempotent: re-runnable. Safe-by-default with --dry-run.
+# Run this script from the checkout you are editing on the VPS:
+#   cd /home/<operator>/mindleaf-note
+#   ./scripts/deploy.sh
 #
-# Usage:
-#   scripts/deploy.sh --vps mindleaf@example.com
-#   scripts/deploy.sh --vps mindleaf@example.com --dry-run        # simulate
-#   scripts/deploy.sh --vps mindleaf@example.com --no-migrate     # skip db:push
-#   scripts/deploy.sh --vps mindleaf@example.com --rollback        # restore prev build
+# The checkout is the source of truth for this release. The script builds it,
+# copies the release into the canonical runtime tree /opt/mindleaf, stages the
+# SPA into /var/www/mindleaf/dist, installs service configuration, and restarts
+# the local services. There is no SSH or remote deploy step.
 #
-# Required env (or flags):
-#   VPS_HOST       user@host (e.g. mindleaf@1.2.3.4 or mindleaf@mydomain.com)
-#   REPO_PATH      path on VPS where repo lives (default /opt/mindleaf)
+# /opt/mindleaf/.env, .pgpass, and .config/ are operational secrets and are
+# preserved from the existing runtime tree; they are never copied from the
+# editable checkout.
 #
-# Steps (real run; --dry-run echoes only):
-#   1. Verify VPS prerequisites (systemd unit, postgresql up, .env present)
-#   2. git pull --ff-only on VPS
-#   3. npm ci at repo root + apps/server front-end-only install
-#   4. npm run build (apps/server tsc → dist/)
-#   5. npm run build (apps/web vite → dist/)
-#   6. rsync SPA dist → /var/www/mindleaf/dist/ on VPS
-#   7. rsync + install systemd unit, Caddyfile, cron file
-#   8. systemctl daemon-reload + restart mindleaf
-#   9. db:push (unless --no-migrate)
-#  10. Healthcheck loop: poll http://localhost:8787/healthz up to 60s.
-#      Auto-rollback if unhealthy.
+# Options:
+#   --dry-run       Print the deployment plan without changing anything.
+#   --no-migrate    Skip the Drizzle db:push step.
+#   --rollback      Restore the newest /opt/mindleaf.bak.* release snapshot.
+#   --timeout SEC   Healthcheck timeout (default: 60).
+#   --pull          Fetch/pull git before deploying (default: no network pull).
+#
+# Environment overrides:
+#   DEPLOY_ROOT=/opt/mindleaf
+#   RUNTIME_USER=mindleaf
 # =============================================================================
 
-set -euo pipefail
+set -Eeuo pipefail
 
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_PATH="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+DEPLOY_ROOT="${DEPLOY_ROOT:-/opt/mindleaf}"
+RUNTIME_USER="${RUNTIME_USER:-mindleaf}"
 DRY_RUN=0
 NO_MIGRATE=0
+NO_PULL=1
 ROLLBACK=0
-VPS_HOST="${VPS_HOST:-}"
-REPO_PATH="${REPO_PATH:-/opt/mindleaf}"
 HEALTHCHECK_TIMEOUT="${HEALTHCHECK_TIMEOUT:-60}"
+KEEP_BACKUPS=2
 
 usage() {
     sed -n '2,30p' "$0" | sed 's/^# \?//'
@@ -47,238 +46,367 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dry-run)         DRY_RUN=1; shift ;;
-        --no-migrate)      NO_MIGRATE=1; shift ;;
-        --rollback)        ROLLBACK=1; shift ;;
-        --vps)             VPS_HOST="$2"; shift 2 ;;
-        --repo-path)       REPO_PATH="$2"; shift 2 ;;
-        --timeout)         HEALTHCHECK_TIMEOUT="$2"; shift 2 ;;
-        -h|--help)         usage; exit 0 ;;
-        *) echo "Unknown arg: $1" >&2; usage >&2; exit 64 ;;
+        --dry-run)  DRY_RUN=1; shift ;;
+        --no-migrate) NO_MIGRATE=1; shift ;;
+        --rollback) ROLLBACK=1; shift ;;
+        --pull) NO_PULL=0; shift ;;
+        --timeout)
+            [[ $# -ge 2 ]] || { echo "ERROR: --timeout requires seconds" >&2; exit 64; }
+            HEALTHCHECK_TIMEOUT="$2"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 64 ;;
     esac
 done
 
-[[ -n "$VPS_HOST" ]] || { echo "ERROR: --vps user@host required" >&2; usage >&2; exit 64; }
+[[ "$HEALTHCHECK_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: --timeout must be a positive integer" >&2
+    exit 64
+}
+[[ "$DEPLOY_ROOT" == /* && "$DEPLOY_ROOT" != *[!A-Za-z0-9_./-]* ]] || {
+    echo "ERROR: DEPLOY_ROOT is invalid" >&2
+    exit 64
+}
 
-# ---------------------------------------------------------------------------
-# Helpers — execute or echo depending on DRY_RUN.
-# ---------------------------------------------------------------------------
+log() { printf '\033[1;32m[deploy]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
+err() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
+step() { printf '\n\033[1;36m=== %s ===\033[0m\n' "$*"; }
 run() {
     if [[ $DRY_RUN -eq 1 ]]; then
-        printf '\033[1;33m[dry-run]\033[0m %s\n' "$*"
+        printf '\033[1;33m[dry-run]\033[0m'; printf ' %q' "$@"; printf '\n'
     else
-        printf '\033[1;32m[run]\033[0m %s\n' "$*"
         "$@"
     fi
 }
 
-ssh_run() {
-    # `ssh -A` would forward the agent for git ops; we use ssh keys
-    # directly (deploy user has passwordless key for the mindleaf user)
-    # so the default key auth is fine. BatchMode=yes avoids password
-    # prompts aborting the script.
-    run ssh -o StrictHostKeyChecking=accept-new \
-             -o BatchMode=yes \
-             -o ConnectTimeout=10 \
-             -- "$VPS_HOST" -- "$1"
+cd -- "$REPO_PATH"
+
+[[ -f package.json && -f package-lock.json ]] || {
+    echo "ERROR: package.json/package-lock.json missing from $REPO_PATH" >&2
+    exit 66
+}
+[[ -f apps/server/package.json && -f apps/web/package.json ]] || {
+    echo "ERROR: workspace package manifests are missing" >&2
+    exit 66
 }
 
-rsync_to() {
-    # rsync with --delete wouldn't be appropriate for /opt/mindleaf
-    # because we'd blow away .env and scripts/backup.sh. We use rsync
-    # to push ONLY specific sub-trees; the deploy/ subtree is mirrored.
-    local src="$1" dst="$2"
-    run rsync -az \
-        --rsync-path="sudo rsync" \
-        --chmod=D0755,F0644 \
-        "$src" "$VPS_HOST:$dst"
-}
+# Keep the rest of the script readable: as root, `sudo` becomes a no-op;
+# as an operator, it remains the normal privilege boundary.
+if [[ "$(id -u)" -eq 0 ]]; then
+    warn "running as root; prefer the normal operator account with sudo"
+    # Keep calls such as `sudo -u postgres ...` working even when sudo
+    # itself is unnecessary because this script already has uid 0.
+    sudo() {
+        if [[ "${1:-}" == "-u" ]]; then
+            local target_user="${2:?sudo -u requires a user}"
+            shift 2
+            runuser -u "$target_user" -- "$@"
+        else
+            "$@"
+        fi
+    }
+else
+    command -v sudo >/dev/null || { err "sudo is required"; exit 69; }
+    if [[ $DRY_RUN -eq 0 ]]; then
+        # Production bootstrap grants a narrow NOPASSWD sudo policy to the
+        # runtime operator. Do not prompt: a locked system user cannot answer
+        # a password prompt, and deploy must fail clearly instead.
+        sudo -n systemctl --version >/dev/null 2>&1 || {
+            err "passwordless sudo is required; run bootstrap.sh or fix the deploy sudoers rule"
+            exit 70
+        }
+    fi
+fi
 
-step() {
-    printf '\n\033[1;36m=== %s ===\033[0m\n' "$1"
-}
+if [[ $DRY_RUN -eq 0 ]]; then
+    command -v node >/dev/null || { err "node is required"; exit 69; }
+    command -v npm >/dev/null || { err "npm is required"; exit 69; }
+    command -v rsync >/dev/null || { err "rsync is required (install it with bootstrap.sh)"; exit 69; }
+    id "$RUNTIME_USER" >/dev/null 2>&1 || {
+        err "runtime user does not exist: $RUNTIME_USER"; exit 69;
+    }
+fi
 
-cleanup_on_error() {
-    local exit_code=$?
-    if [[ $exit_code -ne 0 && $DRY_RUN -eq 0 ]]; then
-        printf '\n\033[1;31m[FATAL] deploy failed with exit %d\033[0m\n' "$exit_code" >&2
-        printf 'Recovery: re-run with --rollback to restore the previous build.\n' >&2
-        printf '  $ %s --vps %s --rollback\n' "$0" "$VPS_HOST" >&2
+TARGET_ENV="$DEPLOY_ROOT/.env"
+BACKEND_DIST="$REPO_PATH/apps/server/dist"
+FRONTEND_DIST="$REPO_PATH/apps/web/dist"
+FRONTEND_ROOT="/var/www/mindleaf"
+FRONTEND_BACKUP_ROOT="/var/www/mindleaf-dist.bak"
+STAMP="$(date -u '+%Y%m%d%H%M%S')"
+RELEASE_STAGE="$DEPLOY_ROOT.new.$STAMP"
+TARGET_BACKUP_PATH=""
+FRONTEND_BACKUP_PATH=""
+CADDY_BACKUP_PATH=""
+SYSTEMD_BACKUP_PATH=""
+CRON_BACKUP_PATH=""
+DEPLOY_MUTATED=0
+CADDY_CONFIG_INSTALLED=0
+SYSTEMD_CONFIG_INSTALLED=0
+CRON_CONFIG_INSTALLED=0
+
+# A deploy lock prevents two operators (or two shells) from swapping the
+# runtime tree at the same time. The lock file itself contains no secrets.
+DEPLOY_LOCK_FILE="${TMPDIR:-/tmp}/mindleaf-deploy-${RUNTIME_USER}.lock"
+exec 9>"$DEPLOY_LOCK_FILE"
+flock -n 9 || { err "another deployment is already running: $DEPLOY_LOCK_FILE"; exit 75; }
+
+restore_release() {
+    if [[ -n "$TARGET_BACKUP_PATH" ]] && sudo test -d "$TARGET_BACKUP_PATH"; then
+        log "restoring runtime release $TARGET_BACKUP_PATH"
+        if sudo test -e "$DEPLOY_ROOT"; then
+            sudo mv "$DEPLOY_ROOT" "$DEPLOY_ROOT.failed.$STAMP"
+        fi
+        sudo mv "$TARGET_BACKUP_PATH" "$DEPLOY_ROOT"
+    fi
+    if [[ -n "$FRONTEND_BACKUP_PATH" ]] && sudo test -d "$FRONTEND_BACKUP_PATH"; then
+        log "restoring frontend $FRONTEND_BACKUP_PATH"
+        if sudo test -d "$FRONTEND_ROOT/dist"; then
+            sudo mv "$FRONTEND_ROOT/dist" "$FRONTEND_ROOT/dist.failed.$STAMP"
+        fi
+        sudo mv "$FRONTEND_BACKUP_PATH" "$FRONTEND_ROOT/dist"
+    fi
+    if [[ -n "$CADDY_BACKUP_PATH" ]] && sudo test -f "$CADDY_BACKUP_PATH"; then
+        sudo cp "$CADDY_BACKUP_PATH" /etc/caddy/Caddyfile
+    elif [[ "$CADDY_CONFIG_INSTALLED" -eq 1 ]]; then
+        sudo rm -f /etc/caddy/Caddyfile
+    fi
+    if [[ -n "$SYSTEMD_BACKUP_PATH" ]] && sudo test -f "$SYSTEMD_BACKUP_PATH"; then
+        sudo cp "$SYSTEMD_BACKUP_PATH" /etc/systemd/system/mindleaf.service
+    elif [[ "$SYSTEMD_CONFIG_INSTALLED" -eq 1 ]]; then
+        sudo rm -f /etc/systemd/system/mindleaf.service
+    fi
+    if [[ -n "$CRON_BACKUP_PATH" ]] && sudo test -f "$CRON_BACKUP_PATH"; then
+        sudo cp "$CRON_BACKUP_PATH" /etc/cron.d/mindleaf-backup
+    elif [[ "$CRON_CONFIG_INSTALLED" -eq 1 ]]; then
+        sudo rm -f /etc/cron.d/mindleaf-backup
     fi
 }
-trap cleanup_on_error EXIT
 
-# ---------------------------------------------------------------------------
-# Rollback path — restore from the most recent dist.bak.<timestamp>
-# ---------------------------------------------------------------------------
+on_error() {
+    local status=$?
+    trap - ERR
+    if [[ $status -ne 0 && $DRY_RUN -eq 0 && $DEPLOY_MUTATED -eq 1 ]]; then
+        err "deployment failed (exit $status); restoring the previous release"
+        if restore_release; then
+            sudo systemctl daemon-reload
+            sudo systemctl reload caddy || true
+            sudo systemctl restart mindleaf
+        else
+            err "automatic rollback failed; inspect *.failed.* and journalctl -u mindleaf"
+        fi
+    fi
+    exit "$status"
+}
+trap on_error ERR
+
 if [[ $ROLLBACK -eq 1 ]]; then
-    step "Rolling back to previous build"
-    ssh_run "ls -dt /opt/mindleaf/apps/server/dist.bak.* 2>/dev/null | head -n1"
-    LATEST_BAK="$(ssh_run 'ls -dt /opt/mindleaf/apps/server/dist.bak.* 2>/dev/null | head -n1')"
-    if [[ -z "$LATEST_BAK" ]]; then
-        echo "ERROR: no dist.bak.* snapshots found" >&2
-        exit 1
+    step "Rolling back latest runtime release"
+    if [[ $DRY_RUN -eq 1 ]]; then
+        log "would restore the newest $DEPLOY_ROOT.bak.* and frontend backup"
+    else
+        TARGET_BACKUP_PATH="$(find "$(dirname "$DEPLOY_ROOT")" -maxdepth 1 -type d -name "$(basename "$DEPLOY_ROOT").bak.*" -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+        FRONTEND_BACKUP_PATH="$(sudo find "$FRONTEND_BACKUP_ROOT" -maxdepth 1 -type d -name 'dist.bak.*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+        [[ -n "$TARGET_BACKUP_PATH" ]] || { err "no runtime backup found for $DEPLOY_ROOT"; exit 66; }
+        restore_release
+        sudo install -m 0644 "$DEPLOY_ROOT/deploy/Caddyfile" /etc/caddy/Caddyfile
+        sudo install -m 0644 "$DEPLOY_ROOT/deploy/systemd/mindleaf.service" /etc/systemd/system/mindleaf.service
+        sudo install -m 0644 "$DEPLOY_ROOT/deploy/cron.d/mindleaf-backup" /etc/cron.d/mindleaf-backup
+        sudo caddy validate --config /etc/caddy/Caddyfile
+        sudo systemctl daemon-reload
+        sudo systemctl reload caddy
+        sudo systemctl restart mindleaf
+        curl --fail --silent --show-error --max-time 10 http://localhost:8787/healthz
+        printf '\n'
+        log "rollback complete"
     fi
-    ssh_run "sudo mv /opt/mindleaf/apps/server/dist /opt/mindleaf/apps/server/dist.failed.$(date +%s) && sudo mv '$LATEST_BAK' /opt/mindleaf/apps/server/dist && sudo systemctl restart mindleaf"
-    printf '\n\033[1;32m[ok]\033[0m rolled back to %s\n' "$LATEST_BAK"
     exit 0
 fi
 
-# ---------------------------------------------------------------------------
-# Step 1 — prereqs
-# ---------------------------------------------------------------------------
-step "Verifying VPS prerequisites"
-ssh_run "test -d '$REPO_PATH' && test -f '$REPO_PATH/.env' && systemctl is-active postgresql >/dev/null && which node && node --version"
+if [[ $DRY_RUN -eq 0 && ! -f "$TARGET_ENV" ]]; then
+    err "$TARGET_ENV is missing; run bootstrap.sh/migrate-vps.sh first"
+    err "the editable checkout's .env is intentionally not used or copied"
+    exit 66
+fi
 
-# Pre-flight: confirm the deploy user can run restricted sudo commands
-# without a password prompt. bootstrap.sh provisions a sudoers drop-in
-# granting `mindleaf ALL=(ALL) NOPASSWD: /bin/systemctl * mindleaf,
-# /usr/bin/rsync`. If the host is misconfigured, restart + rsync
-# below would hang forever on a tty password. Fail fast instead.
+step "Checking local VPS prerequisites"
+log "editable checkout: $REPO_PATH"
+log "runtime target: $DEPLOY_ROOT"
+log "frontend target: $FRONTEND_ROOT/dist"
+
+step "Updating checked-out release"
+if [[ $NO_PULL -eq 1 ]]; then
+    log "--no-pull: keeping the current working tree"
+else
+    run git fetch --tags --prune origin
+    run git pull --ff-only
+fi
+
+step "Installing workspace dependencies in the editable checkout"
+MANIFEST_HASH="$(sha256sum package-lock.json package.json apps/server/package.json apps/web/package.json packages/shared/package.json | sha256sum | cut -d' ' -f1)"
 if [[ $DRY_RUN -eq 1 ]]; then
-    # DRY_RUN echoes only — claiming `passwordless sudo confirmed`
-    # without ever SSH'ing would mislead the operator. Skip with a hint.
-    printf '\033[1;33m[dry-run]\033[0m skipping passwordless sudo pre-flight (no ssh)\n'
-elif ! ssh_run "sudo -n true" >/dev/null 2>&1; then
-    printf '\033[1;31m[FATAL]\033[0m passwordless sudo not configured for %s\n' "$VPS_HOST" >&2
-    printf 'Fix on VPS with: \n' >&2
-    printf '  sudo tee /etc/sudoers.d/mindleaf-deploy >/dev/null <<EOF\n' >&2
-    printf '  %%mindleaf ALL=(ALL) NOPASSWD: /bin/systemctl * mindleaf, /usr/bin/rsync\n' >&2
-    printf '  EOF\n' >&2
-    printf '  sudo chmod 440 /etc/sudoers.d/mindleaf-deploy\n' >&2
-    exit 70
+    log "would compare .package-manifests.sha256 and run npm ci --include=dev if needed"
 else
-    printf '\033[1;32m[ok]\033[0m passwordless sudo confirmed\n'
-fi
-
-PRE_TAG="$(ssh_run "cd '$REPO_PATH' && git describe --tags --always 2>/dev/null || echo none")"
-PRE_BUILT_AT="$(date -u '+%F %T')"
-printf 'pre-deploy:  rev=%s  start=%s UTC\n' "$PRE_TAG" "$PRE_BUILT_AT"
-
-# ---------------------------------------------------------------------------
-# Step 2 — git pull
-# ---------------------------------------------------------------------------
-step "git pull (--ff-only)"
-ssh_run "cd '$REPO_PATH' && git fetch --tags --prune origin && git pull --ff-only"
-
-# ---------------------------------------------------------------------------
-# Step 3 — npm install
-# ---------------------------------------------------------------------------
-step "Installing dependencies (full workspace)"
-ssh_run "cd '$REPO_PATH' && npm ci"
-
-step "Installing apps/server prod-only deps (smaller node_modules)"
-ssh_run "cd '$REPO_PATH/apps/server' && npm install --omit=dev"
-
-# ---------------------------------------------------------------------------
-# Step 4 — typecheck + build (with rollback-friendly backup)
-# ---------------------------------------------------------------------------
-step "Type-checking + building backend"
-ssh_run "cd '$REPO_PATH' && npm run lint --workspace=@mindleaf/server"
-
-# Snapshot the previous dist before we overwrite it — gives deploy.sh
-# --rollback something to restore. Use sudo only when needed (mindleaf
-# owns its own dir).
-ssh_run "if [[ -d /opt/mindleaf/apps/server/dist ]]; then sudo mv /opt/mindleaf/apps/server/dist /opt/mindleaf/apps/server/dist.bak.\$(date +%s); fi"
-ssh_run "cd '$REPO_PATH/apps/server' && npm run build"
-
-# ---------------------------------------------------------------------------
-# Step 5 — frontend build
-# ---------------------------------------------------------------------------
-step "Building frontend SPA"
-ssh_run "cd '$REPO_PATH' && npm ci --workspace=@mindleaf/web"
-ssh_run "cd '$REPO_PATH/apps/web' && npm run build"
-
-# ---------------------------------------------------------------------------
-# Step 6 — rsync SPA to /var/www/mindleaf/dist
-# ---------------------------------------------------------------------------
-step "rsync SPA dist → /var/www/mindleaf/dist"
-ssh_run "sudo mkdir -p /var/www/mindleaf && sudo chown mindleaf:mindleaf /var/www/mindleaf"
-# Push from local (the SPA dist was generated locally if you're running
-# deploy.sh on the host that built it; otherwise we just rsync from VPS).
-# We use the local repo's apps/web/dist if it exists, else fall back to
-# building on the VPS.
-if [[ -d apps/web/dist ]]; then
-    run rsync -az --delete \
-        --rsync-path="sudo rsync" \
-        apps/web/dist/ "$VPS_HOST:/var/www/mindleaf/dist/"
-else
-    ssh_run "sudo rsync -a --delete $REPO_PATH/apps/web/dist/ /var/www/mindleaf/dist/"
-fi
-
-# ---------------------------------------------------------------------------
-# Step 7 — install systemd unit + Caddyfile + cron
-# ---------------------------------------------------------------------------
-step "Installing systemd unit"
-# Push the unit file from local repo to VPS, then sudo install.
-rsync_to deploy/systemd/mindleaf.service /opt/mindleaf/deploy/systemd/mindleaf.service
-ssh_run "sudo install -m 644 /opt/mindleaf/deploy/systemd/mindleaf.service /etc/systemd/system/mindleaf.service"
-ssh_run "sudo systemctl daemon-reload"
-
-step "Installing Caddyfile"
-rsync_to deploy/Caddyfile /opt/mindleaf/deploy/Caddyfile
-ssh_run "sudo install -m 644 /opt/mindleaf/deploy/Caddyfile /etc/caddy/Caddyfile"
-ssh_run "sudo caddy validate --config /etc/caddy/Caddyfile"
-# Reload (not restart) — Caddy is zero-downtime.
-ssh_run "sudo systemctl reload caddy"
-
-step "Installing backup script + cron entry"
-rsync_to deploy/scripts/backup.sh /opt/mindleaf/deploy/scripts/backup.sh
-ssh_run "sudo install -m 755 /opt/mindleaf/deploy/scripts/backup.sh /opt/mindleaf/scripts/backup.sh"
-ssh_run "sudo install -m 644 /opt/mindleaf/deploy/cron.d/mindleaf-backup /etc/cron.d/mindleaf-backup"
-
-# ---------------------------------------------------------------------------
-# Step 8 — db:push (unless skipped)
-# ---------------------------------------------------------------------------
-if [[ $NO_MIGRATE -eq 0 ]]; then
-    step "Applying database schema (db:push)"
-    ssh_run "cd '$REPO_PATH' && sudo -u mindleaf -E bash -c 'set -a; source /opt/mindleaf/.env; set +a; cd apps/server && npm run db:push'"
-else
-    printf '\n\033[1;33m[skip]\033[0m --no-migrate: skipping db:push\n'
-fi
-
-# ---------------------------------------------------------------------------
-# Step 9 — restart + healthcheck
-# ---------------------------------------------------------------------------
-step "Restarting mindleaf.service"
-ssh_run "sudo systemctl restart mindleaf"
-
-step "Healthcheck (timeout=${HEALTHCHECK_TIMEOUT}s)"
-HEALTHCHECK_OK=0
-trials=$(( HEALTHCHECK_TIMEOUT / 2 ))
-for i in $(seq 1 "$trials"); do
-    if ssh_run "curl -fsS http://localhost:8787/healthz" >/dev/null 2>&1; then
-        printf '\033[1;32m[ok]\033[0m backend healthy after %d attempt(s)\n' "$i"
-        HEALTHCHECK_OK=1
-        break
+    if [[ -d node_modules && -f .package-manifests.sha256 && "$(cat .package-manifests.sha256)" == "$MANIFEST_HASH" ]]; then
+        log "dependencies unchanged — skipping npm ci"
+    else
+        log "installing dependencies in $REPO_PATH"
+        env HOME="${HOME:-/home/$(id -un)}" npm_config_cache="${HOME:-/home/$(id -un)}/.npm" \
+            env -u NODE_ENV -u NPM_CONFIG_PRODUCTION -u NPM_CONFIG_OMIT \
+            npm ci --include=dev --prefer-offline --no-audit --no-fund
+        printf '%s\n' "$MANIFEST_HASH" > .package-manifests.sha256.tmp
+        mv .package-manifests.sha256.tmp .package-manifests.sha256
     fi
-    sleep 2
-done
+fi
 
-if [[ $HEALTHCHECK_OK -eq 0 ]]; then
-    printf '\n\033[1;31m[FATAL]\033[0m backend not healthy after %ds — rolling back\n' "$HEALTHCHECK_TIMEOUT" >&2
-    # Restore previous build.
-    LATEST_BAK="$(ssh_run 'ls -dt /opt/mindleaf/apps/server/dist.bak.* 2>/dev/null | head -n1')"
-    if [[ -n "$LATEST_BAK" ]]; then
-        printf 'restoring %s\n' "$LATEST_BAK"
-        ssh_run "sudo mv /opt/mindleaf/apps/server/dist /opt/mindleaf/apps/server/dist.failed.$(date +%s) && sudo mv '$LATEST_BAK' /opt/mindleaf/apps/server/dist && sudo systemctl restart mindleaf"
-        printf 'roll back complete — re-run with --rollback if the new build is confirmed broken\n' >&2
+step "Building backend in the editable checkout"
+run npm run lint --workspace=@mindleaf/server
+if [[ $DRY_RUN -eq 1 ]]; then
+    log "would clean and build $BACKEND_DIST"
+else
+    rm -rf "$BACKEND_DIST"
+    mkdir -p "$BACKEND_DIST"
+fi
+run npm run build --workspace=@mindleaf/server
+
+step "Building frontend in the editable checkout"
+run npm run lint --workspace=@mindleaf/web
+run npm run build --workspace=@mindleaf/web
+
+step "Preparing release copy for $DEPLOY_ROOT"
+if [[ $DRY_RUN -eq 1 ]]; then
+    log "would rsync the current checkout to $RELEASE_STAGE"
+    log "would preserve $TARGET_ENV, .pgpass, and .config/ from the runtime target"
+else
+    sudo rm -rf "$RELEASE_STAGE"
+    sudo mkdir -p "$RELEASE_STAGE"
+    sudo chown "$(id -u):$(id -g)" "$RELEASE_STAGE"
+    # Keep node_modules: the runtime starts from /opt/mindleaf and needs the
+    # workspace dependency tree, including the @mindleaf/shared link.
+    rsync -a --delete \
+        --exclude '.git/' \
+        --exclude '.env' \
+        --exclude '.pgpass' \
+        --exclude '.config/' \
+        --exclude 'apps/server/dist.bak.*/' \
+        --exclude 'apps/server/dist.failed.*/' \
+        --exclude 'apps/web/dist.failed.*/' \
+        "$REPO_PATH/" "$RELEASE_STAGE/"
+    sudo cp -a "$TARGET_ENV" "$RELEASE_STAGE/.env"
+    if sudo test -f "$DEPLOY_ROOT/.pgpass"; then
+        sudo cp -a "$DEPLOY_ROOT/.pgpass" "$RELEASE_STAGE/.pgpass"
+    fi
+    if sudo test -d "$DEPLOY_ROOT/.config"; then
+        sudo cp -a "$DEPLOY_ROOT/.config" "$RELEASE_STAGE/.config"
+    fi
+    sudo chown -R "$RUNTIME_USER:$RUNTIME_USER" "$RELEASE_STAGE"
+fi
+
+step "Staging frontend atomically"
+run sudo mkdir -p "$FRONTEND_ROOT" "$FRONTEND_BACKUP_ROOT"
+if [[ $DRY_RUN -eq 1 ]]; then
+    log "would copy $FRONTEND_DIST to an atomic frontend stage"
+else
+    # Mark the deployment as mutable before moving the current frontend;
+    # any failure after this point must restore the previous dist snapshot.
+    DEPLOY_MUTATED=1
+    FRONTEND_STAGE="$FRONTEND_ROOT/.dist.new.$STAMP"
+    sudo rm -rf "$FRONTEND_STAGE"
+    sudo mkdir -p "$FRONTEND_STAGE"
+    sudo cp -a "$FRONTEND_DIST/." "$FRONTEND_STAGE/"
+    sudo chown -R "$RUNTIME_USER:$RUNTIME_USER" "$FRONTEND_STAGE"
+    if sudo test -d "$FRONTEND_ROOT/dist"; then
+        FRONTEND_BACKUP_PATH="$FRONTEND_BACKUP_ROOT/dist.bak.$STAMP"
+        sudo mv "$FRONTEND_ROOT/dist" "$FRONTEND_BACKUP_PATH"
+    fi
+    sudo mv "$FRONTEND_STAGE" "$FRONTEND_ROOT/dist"
+fi
+
+step "Installing runtime release and service configuration"
+if [[ $DRY_RUN -eq 1 ]]; then
+    log "would snapshot $DEPLOY_ROOT to $DEPLOY_ROOT.bak.$STAMP and activate $RELEASE_STAGE"
+    log "would validate/install Caddy, systemd, and cron from the current checkout"
+else
+    if sudo test -d "$DEPLOY_ROOT"; then
+        TARGET_BACKUP_PATH="$DEPLOY_ROOT.bak.$STAMP"
+        sudo mv "$DEPLOY_ROOT" "$TARGET_BACKUP_PATH"
+    fi
+    sudo mv "$RELEASE_STAGE" "$DEPLOY_ROOT"
+    DEPLOY_MUTATED=1
+
+    CADDY_BACKUP_PATH="/tmp/mindleaf-Caddyfile.$STAMP.bak"
+    SYSTEMD_BACKUP_PATH="/tmp/mindleaf-systemd.$STAMP.bak"
+    CRON_BACKUP_PATH="/tmp/mindleaf-cron.$STAMP.bak"
+    sudo test -f /etc/caddy/Caddyfile && sudo cp /etc/caddy/Caddyfile "$CADDY_BACKUP_PATH" || true
+    sudo test -f /etc/systemd/system/mindleaf.service && sudo cp /etc/systemd/system/mindleaf.service "$SYSTEMD_BACKUP_PATH" || true
+    sudo test -f /etc/cron.d/mindleaf-backup && sudo cp /etc/cron.d/mindleaf-backup "$CRON_BACKUP_PATH" || true
+
+    sudo install -m 0644 "$DEPLOY_ROOT/deploy/Caddyfile" /etc/caddy/Caddyfile
+    CADDY_CONFIG_INSTALLED=1
+    sudo caddy validate --config /etc/caddy/Caddyfile
+    sudo systemctl reload caddy || sudo systemctl start caddy
+
+    sudo install -m 0644 "$DEPLOY_ROOT/deploy/systemd/mindleaf.service" /etc/systemd/system/mindleaf.service
+    SYSTEMD_CONFIG_INSTALLED=1
+    sudo install -m 0644 "$DEPLOY_ROOT/deploy/cron.d/mindleaf-backup" /etc/cron.d/mindleaf-backup
+    CRON_CONFIG_INSTALLED=1
+    sudo systemctl daemon-reload
+    sudo systemctl enable mindleaf caddy
+fi
+
+if [[ $NO_MIGRATE -eq 0 ]]; then
+    step "Applying database schema"
+    if [[ $DRY_RUN -eq 1 ]]; then
+        log "would source $TARGET_ENV and run npm run db:push --workspace=@mindleaf/server -- --force"
+    else
+        set -a
+        # shellcheck disable=SC1091
+        source "$TARGET_ENV"
+        set +a
+        env -u NODE_ENV -u NPM_CONFIG_PRODUCTION -u NPM_CONFIG_OMIT \
+            npm run db:push --workspace=@mindleaf/server -- --force
+    fi
+else
+    warn "--no-migrate specified; skipping db:push"
+fi
+
+step "Restarting local backend"
+run sudo systemctl restart mindleaf
+
+step "Healthcheck"
+if [[ $DRY_RUN -eq 1 ]]; then
+    log "would poll http://localhost:8787/healthz for ${HEALTHCHECK_TIMEOUT}s"
+else
+    HEALTHCHECK_OK=0
+    TRIALS=$(( (HEALTHCHECK_TIMEOUT + 1) / 2 ))
+    for _ in $(seq 1 "$TRIALS"); do
+        if curl --fail --silent --show-error --max-time 5 http://localhost:8787/healthz >/dev/null; then
+            HEALTHCHECK_OK=1
+            break
+        fi
+        sleep 2
+    done
+    if [[ $HEALTHCHECK_OK -ne 1 ]]; then
+        err "backend healthcheck failed; automatic rollback will run"
         exit 1
     fi
+    curl --fail --silent --show-error http://localhost:8787/healthz
+    printf '\n'
 fi
 
-# ---------------------------------------------------------------------------
-# Step 10 — caddy reload (already done above if SPA changed)
-# ---------------------------------------------------------------------------
-POST_TAG="$(ssh_run "cd '$REPO_PATH' && git describe --tags --always 2>/dev/null || echo none")"
-POST_BUILT_AT="$(date -u '+%F %T')"
+step "Pruning old release backups"
+if [[ $DRY_RUN -eq 1 ]]; then
+    log "would keep the newest $KEEP_BACKUPS runtime/frontend backups"
+else
+    find "$(dirname "$DEPLOY_ROOT")" -maxdepth 1 -type d -name "$(basename "$DEPLOY_ROOT").bak.*" -printf '%T@ %p\n' \
+        | sort -nr | tail -n +$((KEEP_BACKUPS + 1)) | cut -d' ' -f2- | xargs -r sudo rm -rf
+    sudo find "$FRONTEND_BACKUP_ROOT" -maxdepth 1 -type d -name 'dist.bak.*' -printf '%T@ %p\n' \
+        | sort -nr | tail -n +$((KEEP_BACKUPS + 1)) | cut -d' ' -f2- | xargs -r sudo rm -rf
+    sudo rm -f "$CADDY_BACKUP_PATH" "$SYSTEMD_BACKUP_PATH" "$CRON_BACKUP_PATH"
+fi
 
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
-printf '\n\033[1;32m=== Deploy complete ===\033[0m\n'
-printf 'pre:  rev=%s  start=%s UTC\n' "$PRE_TAG" "$PRE_BUILT_AT"
-printf 'post: rev=%s  end=%s UTC\n'   "$POST_TAG" "$POST_BUILT_AT"
-
-# Cleanup: prune dist.bak snapshots older than 3 (keep last 2 for safety).
-ssh_run "ls -dt /opt/mindleaf/apps/server/dist.bak.* 2>/dev/null | tail -n +4 | xargs -r sudo rm -rf"
+DEPLOY_MUTATED=0
+log "deployment complete on this VPS"
+log "source: $REPO_PATH"
+log "runtime: $DEPLOY_ROOT"
+log "frontend: $FRONTEND_ROOT/dist"
+log "health: http://localhost:8787/healthz"

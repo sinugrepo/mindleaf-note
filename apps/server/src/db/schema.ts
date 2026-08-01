@@ -4,6 +4,7 @@ import {
   text,
   boolean,
   integer,
+  bigint,
   timestamp,
   index,
   customType,
@@ -98,8 +99,8 @@ export const notes = pgTable(
     contentNonce: bytea('content_nonce'),
     isFolder: boolean('is_folder').notNull().default(false),
     isExpanded: boolean('is_expanded').notNull().default(true),
-    /** Manual drag-drop ordering (epoch ms as sortable float). */
-    orderIdx: integer('order_idx').notNull().default(0),
+    /** Manual drag-drop ordering (epoch milliseconds; PostgreSQL bigint). */
+    orderIdx: bigint('order_idx', { mode: 'number' }).notNull().default(0),
     /** Normalized kebab-case tags. */
     tags: text('tags').array().notNull().default([]),
     /** Soft-delete flag (Trash feature). */

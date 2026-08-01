@@ -21,7 +21,7 @@ const SIDEBAR_INITIAL_WIDTH = 320;
 const SIDEBAR_MIN_WIDTH = 240;
 const SIDEBAR_MAX_WIDTH = 600;
 
-export function Layout() {
+export function Layout({ onLogout }: { onLogout?: () => Promise<void> }) {
   // Granular Zustand selectors: subscribe only to the fields this
   // component actually renders / forwards. Action reads use
   // `useStore.getState()` so they don't even register a subscription
@@ -112,6 +112,7 @@ export function Layout() {
           <Sidebar
             className="w-full h-full border-r-0 !bg-transparent backdrop-blur-none"
             onClose={() => setIsSidebarOpen(false)}
+            onLogout={onLogout}
           />
         </div>
 

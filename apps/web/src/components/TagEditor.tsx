@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
+import { queuedPatchNote } from '../sync/queue';
 import { cn } from '../lib/utils';
 import {
   Hash,
@@ -99,7 +100,7 @@ export function TagEditor({ noteId }: { noteId: string }) {
       return;
     }
     const next = [...(note?.tags ?? []), canonical];
-    await db.notes.update(noteId, { tags: next, updatedAt: Date.now() });
+    await queuedPatchNote(noteId, { tags: next });
     setDraft('');
     setError(null);
   };
@@ -107,7 +108,7 @@ export function TagEditor({ noteId }: { noteId: string }) {
   const removeTag = async (tag: string) => {
     if (!note) return;
     const next = (note.tags ?? []).filter((t) => t !== tag);
-    await db.notes.update(noteId, { tags: next, updatedAt: Date.now() });
+    await queuedPatchNote(noteId, { tags: next });
   };
 
   // No note loaded yet — render a skeleton row so the layout stays
