@@ -47,6 +47,13 @@ describe('validateDropTarget', () => {
     expect(res.reason).toBe('self-drop');
   });
 
+  it('rejects a dragged id that is not present in the active tree', () => {
+    const target = makeNote({ id: 'target', isFolder: true });
+    const res = validateDropTarget('stale-source', target, [target]);
+    expect(res.valid).toBe(false);
+    expect(res.reason).toBe('missing-note');
+  });
+
   it('rejects drop onto non-folder', () => {
     const notes = [
       makeNote({ id: 'a', order: 1 }),

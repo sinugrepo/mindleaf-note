@@ -7,9 +7,11 @@ import {
   filterActiveNotesByTagSet,
   extractAllTags,
   sortRootNotes,
+  DEFAULT_SORT_DIRECTION,
   DEFAULT_SORT_MODE,
   ROOT_SORT_COMPARATORS,
   MAX_TAG_LENGTH,
+  type SortDirection,
   type SortMode,
 } from '../lib/tags';
 import { Note } from '../types';
@@ -231,27 +233,42 @@ describe('sortRootNotes + comparators', () => {
     ]);
   });
 
-  it('updatedAt mode sorts descending — most recently edited first', () => {
-    expect(sortRootNotes([a, b, c], 'updatedAt').map((n) => n.id)).toEqual([
-      'b', // updatedAt 200
-      'c', // updatedAt 150
-      'a', // updatedAt 100
+  it('updatedAt mode supports ascending and descending directions', () => {
+    expect(sortRootNotes([a, b, c], 'updatedAt', 'asc').map((n) => n.id)).toEqual([
+      'a',
+      'c',
+      'b',
+    ]);
+    expect(sortRootNotes([a, b, c], 'updatedAt', 'desc').map((n) => n.id)).toEqual([
+      'b',
+      'c',
+      'a',
     ]);
   });
 
-  it('createdAt mode sorts descending', () => {
-    expect(sortRootNotes([a, b, c], 'createdAt').map((n) => n.id)).toEqual([
-      'b', // 70
-      'a', // 50
-      'c', // 30
+  it('createdAt mode supports ascending and descending directions', () => {
+    expect(sortRootNotes([a, b, c], 'createdAt', 'asc').map((n) => n.id)).toEqual([
+      'c',
+      'a',
+      'b',
+    ]);
+    expect(sortRootNotes([a, b, c], 'createdAt', 'desc').map((n) => n.id)).toEqual([
+      'b',
+      'a',
+      'c',
     ]);
   });
 
-  it('title mode sorts alphabetically, case-insensitive', () => {
-    expect(sortRootNotes([a, b, c], 'title').map((n) => n.title)).toEqual([
+  it('title mode supports ascending and descending directions', () => {
+    expect(sortRootNotes([a, b, c], 'title', 'asc').map((n) => n.title)).toEqual([
       'apple',
       'Banana',
       'Cherry',
+    ]);
+    expect(sortRootNotes([a, b, c], 'title', 'desc').map((n) => n.title)).toEqual([
+      'Cherry',
+      'Banana',
+      'apple',
     ]);
   });
 
@@ -267,8 +284,16 @@ describe('sortRootNotes + comparators', () => {
     expect(sortRootNotes([a], 'manual')).toEqual([a]);
   });
 
-  it('DEFAULT_SORT_MODE is `manual` (backwards-compat with current UX)', () => {
+  it('defaults to manual ascending for backwards compatibility', () => {
     expect(DEFAULT_SORT_MODE).toBe('manual');
+    expect(DEFAULT_SORT_DIRECTION).toBe('asc');
+  });
+
+  it('accepts every supported direction', () => {
+    const directions: SortDirection[] = ['asc', 'desc'];
+    for (const direction of directions) {
+      expect(sortRootNotes([a, b], 'manual', direction)).toHaveLength(2);
+    }
   });
 
   it('every SortMode value has a registered comparator', () => {

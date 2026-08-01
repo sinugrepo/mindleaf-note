@@ -9,6 +9,9 @@ describe('useStore', () => {
       activeNoteId: null,
       searchQuery: '',
       theme: 'system',
+      sortMode: 'manual',
+      sortDirection: 'asc',
+      tagFilter: [],
     });
   });
 
@@ -33,6 +36,13 @@ describe('useStore', () => {
       useStore.getState().setTheme('dark');
       expect(useStore.getState().theme).toBe('dark');
     });
+
+    it('updates sort mode and direction', () => {
+      useStore.getState().setSortMode('title');
+      useStore.getState().setSortDirection('desc');
+      expect(useStore.getState().sortMode).toBe('title');
+      expect(useStore.getState().sortDirection).toBe('desc');
+    });
   });
 
   describe('default state', () => {
@@ -50,14 +60,18 @@ describe('useStore', () => {
   });
 
   describe('persist / partialize', () => {
-    it('persists theme and activeNoteId to localStorage', () => {
+    it('persists theme, activeNoteId, and sort preferences to localStorage', () => {
       useStore.getState().setActiveNoteId('persisted-id');
       useStore.getState().setTheme('dark');
+      useStore.getState().setSortMode('updatedAt');
+      useStore.getState().setSortDirection('desc');
       const raw = localStorage.getItem('treenote-storage');
       expect(raw).not.toBeNull();
       const parsed = JSON.parse(raw!);
       expect(parsed.state.activeNoteId).toBe('persisted-id');
       expect(parsed.state.theme).toBe('dark');
+      expect(parsed.state.sortMode).toBe('updatedAt');
+      expect(parsed.state.sortDirection).toBe('desc');
     });
 
     it('does NOT persist searchQuery (partialize excludes it)', () => {
@@ -109,7 +123,7 @@ describe('useStore', () => {
       await Promise.resolve();
     }
 
-    it('restores theme and activeNoteId from a clean persisted blob', async () => {
+    it('restores theme, activeNoteId, and sort preferences from a clean persisted blob', async () => {
       // Realistic blob shape: a normal save produces ONLY the partialized fields
       // (theme + activeNoteId). searchQuery is intentionally absent because the
       // SAVE path filters it out via partialize (covered by the next test).
@@ -118,16 +132,36 @@ describe('useStore', () => {
         state: {
           theme: 'light',
           activeNoteId: 'restored-note-id',
+          sortMode: 'title',
+          sortDirection: 'desc',
+          tagFilter: [],
         },
       });
 
       const state = useStore.getState();
       expect(state.theme).toBe('light');
       expect(state.activeNoteId).toBe('restored-note-id');
+      expect(state.sortMode).toBe('title');
+      expect(state.sortDirection).toBe('desc');
       // Action functions remain present after rehydration.
       expect(typeof state.setActiveNoteId).toBe('function');
       expect(typeof state.setTheme).toBe('function');
       expect(typeof state.setSearchQuery).toBe('function');
+    });
+
+    it('migrates v2 state with the default ascending direction', async () => {
+      await rehydrateFrom({
+        version: 2,
+        state: {
+          theme: 'light',
+          activeNoteId: null,
+          sortMode: 'updatedAt',
+          tagFilter: [],
+        },
+      });
+
+      expect(useStore.getState().sortMode).toBe('updatedAt');
+      expect(useStore.getState().sortDirection).toBe('asc');
     });
 
     it('does NOT write searchQuery through to localStorage when calling setSearchQuery (partialize-on-save)', async () => {

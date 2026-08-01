@@ -25,6 +25,8 @@ import {
 } from './WikiLinkAutocomplete';
 import { BacklinksPanel } from './BacklinksPanel';
 import { TagEditor } from './TagEditor';
+import { AttachmentPanel } from './AttachmentPanel';
+import { sanitizeHtml } from '../lib/sanitize';
 
 // ---------------------------------------------------------------------------
 // CROSS-FILE INVARIANT (do not remove without re-reading this comment):
@@ -361,7 +363,7 @@ export function Editor({ noteId }: { noteId: string }) {
   const initializedRef = useRef<boolean>(false);
   useEffect(() => {
     if (editor && note && !initializedRef.current) {
-      editor.commands.setContent(note.content, { emitUpdate: false });
+      editor.commands.setContent(sanitizeHtml(note.content), { emitUpdate: false });
       initializedRef.current = true;
     }
   }, [editor, note]);
@@ -454,6 +456,7 @@ export function Editor({ noteId }: { noteId: string }) {
             straight to db.notes via the v4 schema's `tags` field;
             siblings in other notes appear as typeahead suggestions. */}
         <TagEditor noteId={note.id} />
+        <AttachmentPanel noteId={note.id} />
       </div>
 
       {/* Tiptap Editor Area */}

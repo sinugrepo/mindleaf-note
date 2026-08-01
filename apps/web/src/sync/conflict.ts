@@ -12,8 +12,8 @@
 import { v4 as uuidv4 } from 'uuid';
 import { db, type PendingMutation } from '../db/db';
 import { api } from '../api/client';
-import { queuedCreateNote } from './queue';
-import type { Note } from '../types';
+import { queuedImportNotes } from './queue';
+import { ATTACHMENT_SRC_PREFIX, type Attachment, type Note } from '../types';
 
 /**
  * Resolve a conflict by keeping the remote version.
@@ -94,15 +94,55 @@ export async function resolveKeepBoth(
     version: number;
   },
 ): Promise<void> {
-  // 1. Create a new note with the local content
+  // 1. Create a new note with the local content. Attachment references
+  // must be rewritten to fresh ids; otherwise the copy would point at
+  // rows owned by the original note and could become an unavailable image
+  // after either note is edited or purged.
+  const copyId = uuidv4();
+  const attachmentIds = Array.from(
+    localNote.content.matchAll(
+      new RegExp(`${ATTACHMENT_SRC_PREFIX}([^"'\\s<]+)`, 'g'),
+    ),
+  ).map((match) => match[1]);
+  const sourceAttachments = attachmentIds.length
+    ? await db.attachments.where('id').anyOf(attachmentIds).toArray()
+    : [];
+  const clonedBySourceId = new Map<string, Attachment>();
+  for (const source of sourceAttachments) {
+    let blob = source.blob;
+    if (blob.size === 0 && source.r2Key) {
+      const attachmentUrl = await api.getAttachmentUrl(source.id);
+      const response = await fetch(attachmentUrl.url);
+      if (!response.ok) throw new Error(`Unable to download attachment ${source.id}`);
+      blob = await response.blob();
+    }
+    if (blob.size === 0) throw new Error(`Attachment ${source.id} is unavailable`);
+    const clone: Attachment = {
+      ...source,
+      id: uuidv4(),
+      noteId: copyId,
+      blob,
+      r2Key: null,
+      syncStatus: 'local_only',
+    };
+    clonedBySourceId.set(source.id, clone);
+  }
+  const rewrittenContent = localNote.content.replace(
+    new RegExp(`${ATTACHMENT_SRC_PREFIX}([^"'\\s<]+)`, 'g'),
+    (full, sourceId: string) => {
+      const clone = clonedBySourceId.get(sourceId);
+      return clone ? `${ATTACHMENT_SRC_PREFIX}${clone.id}` : full;
+    },
+  );
   const copyNote: Note = {
     ...localNote,
-    id: uuidv4(),
+    id: copyId,
+    content: rewrittenContent,
     title: `${localNote.title} (conflict copy)`,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
-  await queuedCreateNote(copyNote);
+  await queuedImportNotes([copyNote], Array.from(clonedBySourceId.values()));
 
   // 2. Revert local to remote (same as resolveUseRemote)
   await resolveUseRemote(mutationId, remoteNote);

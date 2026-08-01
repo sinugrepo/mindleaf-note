@@ -20,6 +20,7 @@ import { db, type PendingMutation } from '../db/db';
 import type { Note, Attachment } from '../types';
 import { shouldSync } from '../api/client';
 import { notifyDrainer } from './drainer';
+import { isHistoryReplay, recordNoteChange } from '../lib/note-history';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -51,15 +52,6 @@ async function enqueue(
   // waiting for the next 5-second interval tick. The drainer's
   // `draining` guard prevents concurrent drains.
   notifyDrainer();
-}
-
-/**
- * Get the current `version` of a note from IndexedDB. Returns 0 if
- * the note doesn't exist or has no version field (pre-sync notes).
- */
-async function getNoteVersion(noteId: string): Promise<number> {
-  const note = await db.notes.get(noteId);
-  return note?.version ?? 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +108,8 @@ export function queuedPatchNote(
 ): Promise<void> {
   const previous = patchChains.get(noteId) ?? Promise.resolve();
   const operation = previous.catch(() => undefined).then(async () => {
-    const currentVersion = await getNoteVersion(noteId);
+    const current = await db.notes.get(noteId);
+    const currentVersion = current?.version ?? 0;
     const optimisticVersion = currentVersion + 1;
 
     // Map `order` → `orderIdx` in the API payload (the backend column
@@ -127,6 +120,13 @@ export function queuedPatchNote(
       delete apiPayload.order;
     }
 
+    const before: Partial<Pick<Note, 'title' | 'content' | 'isExpanded' | 'order' | 'parentId' | 'tags'>> = {};
+    for (const field of Object.keys(updates) as Array<keyof typeof updates>) {
+      if (current && current[field] !== undefined) {
+        (before as Record<string, unknown>)[field] = current[field];
+      }
+    }
+
     await db.notes.update(noteId, {
       ...updates,
       updatedAt: now,
@@ -134,6 +134,16 @@ export function queuedPatchNote(
       dirty: true,
     });
     await enqueue('patch_note', noteId, apiPayload, currentVersion);
+    // TipTap maintains its own character-level content history. Keep the
+    // shared queue history focused on tree/title/tag changes so autosave does
+    // not create one global history entry per keystroke.
+    if (!isHistoryReplay()) {
+      const historyBefore = { ...before };
+      delete historyBefore.content;
+      const historyAfter = { ...updates };
+      delete historyAfter.content;
+      recordNoteChange({ noteId, before: historyBefore, after: historyAfter });
+    }
   });
   const tracked = operation.finally(() => {
     if (patchChains.get(noteId) === tracked) patchChains.delete(noteId);

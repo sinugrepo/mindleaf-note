@@ -56,6 +56,22 @@ const ROW_HEIGHT = 32;
 
 /** Extra rows rendered above/below the visible window for smooth scroll. */
 const OVERSCAN = 6;
+const CONTEXT_MENU_WIDTH = 176;
+const CONTEXT_MENU_HEIGHT = 248;
+const VIEWPORT_MARGIN = 8;
+
+function getContextMenuPosition(x: number, y: number): { x: number; y: number } {
+  return {
+    x: Math.max(
+      VIEWPORT_MARGIN,
+      Math.min(x, window.innerWidth - CONTEXT_MENU_WIDTH - VIEWPORT_MARGIN),
+    ),
+    y: Math.max(
+      VIEWPORT_MARGIN,
+      Math.min(y, window.innerHeight - CONTEXT_MENU_HEIGHT - VIEWPORT_MARGIN),
+    ),
+  };
+}
 
 export interface TreeViewProps {
   /**
@@ -79,6 +95,7 @@ export function TreeView({ disableVirtualization: dvProp }: TreeViewProps = {}) 
   const allNotes = useLiveQuery(() => db.notes.toArray(), []);
   const tagFilter = useStore((s) => s.tagFilter);
   const sortMode = useStore((s) => s.sortMode);
+  const sortDirection = useStore((s) => s.sortDirection);
 
   // Filter to active notes first (mirrors legacy semantics: deleted
   // notes never show in the tree), then apply the tag-filter AND
@@ -95,6 +112,14 @@ export function TreeView({ disableVirtualization: dvProp }: TreeViewProps = {}) 
     [allNotes, tagFilter],
   );
 
+  // Tree rows may be filtered or hidden when a folder is collapsed, but
+  // drag/drop operations must always see the complete active tree. Using
+  // `flatNotes` here would make order calculations ignore hidden children.
+  const activeNotesForOps = useMemo(
+    () => (allNotes ?? []).filter(isActiveNote),
+    [allNotes],
+  );
+
   // Apply root-sort: chunk-sort only the root-level entries (the
   // children of `parentId: null`); children of any folder stay in
   // their stored `order`, which preserves drag/move-up/move-down
@@ -102,7 +127,7 @@ export function TreeView({ disableVirtualization: dvProp }: TreeViewProps = {}) 
   // notes / mode change, not once per row.
   const sortedNotes = useMemo(() => {
     const roots = notes.filter((n) => !n.parentId);
-    const sortedRoots = sortRootNotes(roots, sortMode);
+    const sortedRoots = sortRootNotes(roots, sortMode, sortDirection);
     const rootIds = new Set(sortedRoots.map((n) => n.id));
     // Reassemble: sorted roots first, then non-roots (children of
     // whatever root owns them — `flattenTree` will do its own
@@ -112,7 +137,7 @@ export function TreeView({ disableVirtualization: dvProp }: TreeViewProps = {}) 
       ...sortedRoots,
       ...rest.filter((n) => rootIds.has(n.parentId!) || n.parentId !== null),
     ];
-  }, [notes, sortMode]);
+  }, [notes, sortMode, sortDirection]);
 
   // O(N) flatten once per notes change. The result defines both display
   // order AND which rows are currently visible (collapsed subtrees don't
@@ -146,6 +171,7 @@ export function TreeView({ disableVirtualization: dvProp }: TreeViewProps = {}) 
   return (
     <VirtualizedFlatList
       flatNotes={flatNotes}
+      allNotesForOps={activeNotesForOps}
       moveSupportMap={moveSupportMap}
       disableVirtualization={dvProp}
     />
@@ -165,6 +191,8 @@ export function TreeView({ disableVirtualization: dvProp }: TreeViewProps = {}) 
 
 interface VirtualizedFlatListProps {
   flatNotes: FlatTreeItem[];
+  /** Complete active tree used by drag/drop validation and ordering. */
+  allNotesForOps: Note[];
   /**
    * Precomputed move-up / move-down support for every visible row.
    * Built once per `flatNotes` change in the parent TreeView so each
@@ -177,6 +205,7 @@ interface VirtualizedFlatListProps {
 
 function VirtualizedFlatList({
   flatNotes,
+  allNotesForOps,
   moveSupportMap,
   disableVirtualization,
 }: VirtualizedFlatListProps) {
@@ -255,6 +284,8 @@ function VirtualizedFlatList({
     <div
       ref={containerRef}
       className="h-full overflow-y-auto"
+      role="tree"
+      aria-label="Notes tree"
       data-testid="treeview-scroll-container"
     >
       {/*
@@ -277,6 +308,7 @@ function VirtualizedFlatList({
             <TreeRow
               item={item}
               flatNotes={flatNotes}
+              allNotesForOps={allNotesForOps}
               moveSupportMap={moveSupportMap}
             />
           </div>
@@ -297,15 +329,21 @@ function VirtualizedFlatList({
 interface TreeRowProps {
   item: FlatTreeItem;
   flatNotes: FlatTreeItem[];
+  /** Complete active tree; unlike the visible flat list, includes collapsed descendants. */
+  allNotesForOps: Note[];
   /** Precomputed move-support map; see VirtualizedFlatListProps. */
   moveSupportMap: Map<string, MoveSupport>;
 }
 
-function TreeRowImpl({ item, flatNotes, moveSupportMap }: TreeRowProps) {
-  const { activeNoteId, setActiveNoteId } = useStore();
+function TreeRowImpl({ item, flatNotes, allNotesForOps, moveSupportMap }: TreeRowProps) {
+  const { activeNoteId, setActiveNoteId, selectedNoteIds, toggleNoteSelection } = useStore();
   const { note, depth, hasChildren, isOpened } = item;
 
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
+  const [contextMenuPosition, setContextMenuPosition] = useState({ x: 0, y: 0 });
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const contextMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const [showConfirmDelete, setShowConfirmDelete] = useState(false);
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [renameDraft, setRenameDraft] = useState('');
@@ -327,6 +365,13 @@ function TreeRowImpl({ item, flatNotes, moveSupportMap }: TreeRowProps) {
   );
 
   const isActive = activeNoteId === note.id;
+
+  // The parent virtualizer scrolls the active row into view first. Once the
+  // row is mounted, this effect gives keyboard users a stable focus target
+  // without querying selectors or relying on CSS.escape for note ids.
+  useEffect(() => {
+    if (isActive) rowRef.current?.focus();
+  }, [isActive]);
 
   // Drag-drop on virtualized rows. Source row stays alive while the
   // user drags (the visible window covers the source). If the source
@@ -350,15 +395,82 @@ function TreeRowImpl({ item, flatNotes, moveSupportMap }: TreeRowProps) {
     setIsDragOver(false);
   };
 
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setActiveNoteId(note.id);
+    setContextMenuPosition(getContextMenuPosition(e.clientX, e.clientY));
+    setContextMenuOpen(true);
+  };
+
+  React.useEffect(() => {
+    if (!contextMenuOpen) return;
+
+    // Put keyboard focus inside the menu after it is mounted, matching the
+    // behavior users expect from a native context menu.
+    const firstItem = contextMenuRef.current?.querySelector<HTMLButtonElement>(
+      '[role="menuitem"]',
+    );
+    firstItem?.focus();
+
+    const closeMenu = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        contextMenuRef.current?.contains(target) ||
+        contextMenuButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setContextMenuOpen(false);
+    };
+    const closeOtherMenus = (e: MouseEvent) => {
+      // Capture phase lets the newly targeted row open its menu while any
+      // previously open row closes, even though the row stops propagation.
+      if (!rowRef.current?.contains(e.target as Node)) setContextMenuOpen(false);
+    };
+    const closeOnEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setContextMenuOpen(false);
+        contextMenuButtonRef.current?.focus();
+      }
+    };
+    document.addEventListener('mousedown', closeMenu);
+    window.addEventListener('contextmenu', closeOtherMenus, true);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeMenu);
+      window.removeEventListener('contextmenu', closeOtherMenus, true);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [contextMenuOpen]);
+
+  const handleContextMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const items = Array.from(
+      e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    );
+    if (items.length === 0) return;
+
+    const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+    let nextIndex: number | null = null;
+    if (e.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length;
+    if (e.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
+    if (e.key === 'Home') nextIndex = 0;
+    if (e.key === 'End') nextIndex = items.length - 1;
+    if (nextIndex !== null) {
+      e.preventDefault();
+      items[nextIndex].focus();
+    }
+  };
+
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
 
     const draggedNoteId = e.dataTransfer.getData('text/plain');
-    // Convert the flat list back into the `Note[]` array that
-    // tree-ops helpers expect.
-    const allNotesForOps = flatNotes.map((f) => f.note);
+    // Use the complete active tree, not the visible flat list: collapsed
+    // folders still have children whose order must be respected.
     const validation = validateDropTarget(
       draggedNoteId,
       note,
@@ -449,6 +561,56 @@ function TreeRowImpl({ item, flatNotes, moveSupportMap }: TreeRowProps) {
 
   const handleSelect = () => {
     setActiveNoteId(note.id);
+    rowRef.current?.focus();
+  };
+
+  const handleTreeKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (contextMenuOpen || showConfirmDelete || showRenameModal) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('input, button, textarea, [contenteditable="true"]') && target !== e.currentTarget) return;
+    const index = flatNotes.findIndex((entry) => entry.note.id === note.id);
+    if (index < 0) return;
+
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = flatNotes[index + (e.key === 'ArrowUp' ? -1 : 1)];
+      if (next) {
+        setActiveNoteId(next.note.id);
+      }
+      return;
+    }
+    if (e.key === 'ArrowRight' && hasChildren) {
+      e.preventDefault();
+      if (!isOpened && note.isFolder) void queuedPatchNote(note.id, { isExpanded: true });
+      else {
+        const child = flatNotes[index + 1];
+        if (child && child.depth > item.depth) {
+          setActiveNoteId(child.note.id);
+        }
+      }
+      return;
+    }
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      if (isOpened && note.isFolder) {
+        void queuedPatchNote(note.id, { isExpanded: false });
+        return;
+      }
+      if (item.depth > 0) {
+        const parent = flatNotes.slice(0, index).reverse().find((entry) => entry.depth === item.depth - 1);
+        if (parent) {
+          setActiveNoteId(parent.note.id);
+        }
+      }
+      return;
+    }
+    if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault();
+      const destination = e.key === 'Home' ? flatNotes[0] : flatNotes[flatNotes.length - 1];
+      if (destination) {
+        setActiveNoteId(destination.note.id);
+      }
+    }
   };
 
   const addChild = async (e: React.MouseEvent) => {
@@ -513,11 +675,21 @@ function TreeRowImpl({ item, flatNotes, moveSupportMap }: TreeRowProps) {
   return (
     <>
       <div
+        ref={rowRef}
         draggable
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
+        onContextMenu={handleContextMenu}
+        onKeyDown={handleTreeKeyDown}
+        tabIndex={isActive ? 0 : -1}
+        role="treeitem"
+        aria-level={depth + 1}
+        aria-selected={isActive}
+        aria-expanded={hasChildren ? isOpened : undefined}
+        data-tree-row-id={note.id}
+
         className={cn(
           'group flex items-center pr-2 cursor-pointer select-none border border-transparent text-sm transition-all',
           isActive
@@ -533,7 +705,17 @@ function TreeRowImpl({ item, flatNotes, moveSupportMap }: TreeRowProps) {
         }}
         onClick={handleSelect}
       >
+        <input
+          type="checkbox"
+          checked={selectedNoteIds.includes(note.id)}
+          onChange={() => toggleNoteSelection(note.id)}
+          onClick={(e) => e.stopPropagation()}
+          aria-label={`Select ${note.title || 'note'}`}
+          className="mr-1 h-3.5 w-3.5 accent-blue-500 shrink-0"
+        />
+
         <button
+          type="button"
           onClick={toggleExpand}
           className={cn(
             'p-0.5 rounded text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-300 w-5 h-5 flex items-center justify-center shrink-0 mr-0.5',
@@ -565,30 +747,46 @@ function TreeRowImpl({ item, flatNotes, moveSupportMap }: TreeRowProps) {
         </span>
 
         {/* Context Actions Hover */}
-        <div
-          className="opacity-0 group-hover:opacity-100 flex items-center shrink-0 relative"
-          onMouseLeave={() => setContextMenuOpen(false)}
-        >
+        <div className="flex items-center shrink-0 relative">
           <button
+            ref={contextMenuButtonRef}
             onClick={(e) => {
               e.stopPropagation();
+              const rect = e.currentTarget.getBoundingClientRect();
+              setContextMenuPosition(getContextMenuPosition(rect.right, rect.bottom));
               setContextMenuOpen(!contextMenuOpen);
             }}
-            className="p-1 text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 rounded"
+            aria-label="Open note actions"
+            aria-haspopup="menu"
+            aria-expanded={contextMenuOpen}
+            type="button"
+            className="p-1 text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
           >
             <MoreVertical className="w-3.5 h-3.5" />
           </button>
 
           {contextMenuOpen && (
-            <div className="absolute right-0 top-full mt-1 w-36 py-1 bg-white/80 dark:bg-zinc-800/90 backdrop-blur-md rounded shadow-[0_4px_24px_-4px_rgba(0,0,0,0.1)] border border-white/60 dark:border-zinc-700/50 z-50 text-xs">
+            <div
+              ref={contextMenuRef}
+              role="menu"
+              aria-label={`Actions for ${note.title || 'note'}`}
+              tabIndex={-1}
+              onKeyDown={handleContextMenuKeyDown}
+              className="fixed w-44 py-1 bg-white/95 dark:bg-zinc-800/95 backdrop-blur-md rounded-lg shadow-[0_8px_30px_-8px_rgba(0,0,0,0.3)] border border-zinc-200/80 dark:border-zinc-700/70 z-[100] text-xs"
+              style={{ left: contextMenuPosition.x, top: contextMenuPosition.y }}
+            >
               <button
                 onClick={addChildFolder}
+                role="menuitem"
+                type="button"
                 className="w-full text-left px-3 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center"
               >
                 <FolderPlus className="w-3 h-3 mr-2" /> Add Folder
               </button>
               <button
                 onClick={addChild}
+                role="menuitem"
+                type="button"
                 className="w-full text-left px-3 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center"
               >
                 <CornerDownRight className="w-3 h-3 mr-2" /> Add Child
@@ -597,7 +795,9 @@ function TreeRowImpl({ item, flatNotes, moveSupportMap }: TreeRowProps) {
               {canMoveUp && (
                 <button
                   onClick={moveUp}
-                  className="w-full text-left px-3 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center"
+                  role="menuitem"
+                type="button"
+                className="w-full text-left px-3 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center"
                 >
                   Move Up
                 </button>
@@ -605,13 +805,17 @@ function TreeRowImpl({ item, flatNotes, moveSupportMap }: TreeRowProps) {
               {canMoveDown && (
                 <button
                   onClick={moveDown}
-                  className="w-full text-left px-3 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center"
+                  role="menuitem"
+                type="button"
+                className="w-full text-left px-3 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center"
                 >
                   Move Down
                 </button>
               )}
               <button
                 onClick={openRenameModal}
+                role="menuitem"
+                type="button"
                 className="w-full text-left px-3 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center"
               >
                 <Pencil className="w-3 h-3 mr-2" /> Rename
@@ -619,6 +823,8 @@ function TreeRowImpl({ item, flatNotes, moveSupportMap }: TreeRowProps) {
               <div className="border-t border-zinc-100 dark:border-zinc-700 my-1"></div>
               <button
                 onClick={handleDeleteClick}
+                role="menuitem"
+                type="button"
                 className="w-full text-left px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/30 text-red-600 dark:text-red-400"
               >
                 Delete

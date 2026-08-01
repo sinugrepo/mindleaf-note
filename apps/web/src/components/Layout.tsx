@@ -15,7 +15,10 @@ import {
   GlobalShortcuts,
 } from '../hooks/useGlobalKeyboardShortcuts';
 import { ChevronRight } from 'lucide-react';
+import { CommandPalette, CommandItem } from './CommandPalette';
 import { createRootNote, createChildNote, NEW_CHILD_NOTE_TITLE } from '../lib/notes';
+import { queuedPatchNote } from '../sync/queue';
+import { undoLastNoteChange, redoLastNoteChange } from '../lib/note-history';
 
 const SIDEBAR_INITIAL_WIDTH = 320;
 const SIDEBAR_MIN_WIDTH = 240;
@@ -38,6 +41,7 @@ export function Layout({ onLogout }: { onLogout?: () => Promise<void> }) {
 
   const isMobile = useMediaQuery('(max-width: 767px)');
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   // Apply the user's theme preference to <html> (system, light, or dark).
   useThemeSync(theme);
@@ -67,18 +71,48 @@ export function Layout({ onLogout }: { onLogout?: () => Promise<void> }) {
     document.getElementById('global-search')?.focus();
   }, []);
 
+  const handleUndo = useCallback(async () => {
+    try {
+      await undoLastNoteChange((noteId, updates) => queuedPatchNote(noteId, updates));
+    } catch (error) {
+      console.error('Undo failed:', error);
+    }
+  }, []);
+
+  const handleRedo = useCallback(async () => {
+    try {
+      await redoLastNoteChange((noteId, updates) => queuedPatchNote(noteId, updates));
+    } catch (error) {
+      console.error('Redo failed:', error);
+    }
+  }, []);
+
+  const commands = useMemo<CommandItem[]>(
+    () => [
+      { id: 'new-note', label: 'New root note', shortcut: 'Ctrl+N', run: handleNewRootNote },
+      { id: 'new-child', label: 'New child note', shortcut: 'Ctrl+Shift+N', run: handleNewChildNote },
+      { id: 'focus-search', label: 'Focus search', shortcut: 'Ctrl+F', run: handleFocusSearch },
+      { id: 'open-sidebar', label: 'Open sidebar', run: () => setIsSidebarOpen(true) },
+    ],
+    [handleNewRootNote, handleNewChildNote, handleFocusSearch],
+  );
+
   const shortcuts = useMemo<GlobalShortcuts>(
     () => ({
       onNewRootNote: handleNewRootNote,
       onNewChildNote: handleNewChildNote,
       onFocusSearch: handleFocusSearch,
+      onOpenCommandPalette: () => setCommandPaletteOpen(true),
+      onUndo: handleUndo,
+      onRedo: handleRedo,
     }),
-    [handleNewRootNote, handleNewChildNote, handleFocusSearch],
+    [handleNewRootNote, handleNewChildNote, handleFocusSearch, handleUndo, handleRedo],
   );
 
   useGlobalKeyboardShortcuts(shortcuts);
 
   return (
+    <>
     <div
       className={cn(
         'flex h-[100dvh] w-screen overflow-hidden text-zinc-900 bg-transparent dark:text-zinc-100 transition-colors duration-300 relative',
@@ -158,6 +192,8 @@ export function Layout({ onLogout }: { onLogout?: () => Promise<void> }) {
         )}
       </main>
     </div>
+    <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} commands={commands} />
+    </>
   );
 }
 

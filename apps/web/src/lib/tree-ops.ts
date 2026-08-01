@@ -5,7 +5,7 @@ import { Note } from '../types';
  */
 export interface DropValidationResult {
   valid: boolean;
-  reason?: 'not-folder' | 'self-drop' | 'descendant' | 'missing-id';
+  reason?: 'not-folder' | 'self-drop' | 'descendant' | 'missing-id' | 'missing-note';
 }
 
 /**
@@ -25,6 +25,9 @@ export function validateDropTarget(
   }
   if (draggedId === target.id) {
     return { valid: false, reason: 'self-drop' };
+  }
+  if (!allNotes.some((note) => note.id === draggedId)) {
+    return { valid: false, reason: 'missing-note' };
   }
   if (!target.isFolder) {
     return { valid: false, reason: 'not-folder' };
