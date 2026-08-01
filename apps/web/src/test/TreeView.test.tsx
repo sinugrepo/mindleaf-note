@@ -106,6 +106,22 @@ describe('TreeView (smoke)', () => {
       expect(screen.queryByText('Child')).not.toBeInTheDocument();
     });
 
+    it('renders root notes in ascending and descending sort order', () => {
+      seedNotes([
+        makeNote({ id: 'b', title: 'Beta', order: 1 }),
+        makeNote({ id: 'a', title: 'Alpha', order: 2 }),
+      ]);
+      useStore.setState({ sortMode: 'title', sortDirection: 'asc' });
+      const { unmount } = render(<TreeView />);
+      const tree = screen.getByRole('tree');
+      expect(Array.from(tree.querySelectorAll('[role="treeitem"] span.truncate')).map((node) => node.textContent)).toEqual(['Alpha', 'Beta']);
+      unmount();
+
+      useStore.setState({ sortMode: 'title', sortDirection: 'desc' });
+      render(<TreeView />);
+      expect(Array.from(screen.getByRole('tree').querySelectorAll('[role="treeitem"] span.truncate')).map((node) => node.textContent)).toEqual(['Beta', 'Alpha']);
+    });
+
     it('marks active note visually', () => {
       seedNotes([makeNote({ id: 'a', title: 'Aye', order: 1 })]);
       useStore.setState({ activeNoteId: 'a' });

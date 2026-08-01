@@ -246,7 +246,10 @@ export interface FlatTreeItem {
  * Pure: no React, no DOM, no I/O. Safe to call inside a `useMemo` or
  * test fixture.
  */
-export function flattenTree(notes: Note[]): FlatTreeItem[] {
+export function flattenTree(
+  notes: Note[],
+  rootOrder?: readonly string[],
+): FlatTreeItem[] {
   // Single pass to bucket notes by parentId. parentId comes back as
   // `null` for root notes; Dexie never writes `undefined` for nullable
   // columns in this codebase, so a plain null bucket is enough.
@@ -262,8 +265,17 @@ export function flattenTree(notes: Note[]): FlatTreeItem[] {
   }
   // Sort each bucket once so the DFS emits rows in display order without
   // doing an extra compare per visit.
-  for (const bucket of byParent.values()) {
-    bucket.sort((a, b) => a.order - b.order);
+  for (const [parentId, bucket] of byParent.entries()) {
+    if (parentId === null && rootOrder) {
+      const rootIndex = new Map(rootOrder.map((id, index) => [id, index]));
+      bucket.sort(
+        (a, b) =>
+          (rootIndex.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+          (rootIndex.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+      );
+    } else {
+      bucket.sort((a, b) => a.order - b.order);
+    }
   }
 
   const out: FlatTreeItem[] = [];

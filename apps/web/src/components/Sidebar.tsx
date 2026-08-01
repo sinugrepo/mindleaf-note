@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { Suspense, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useStore } from '../store/useStore';
 import {
@@ -18,7 +18,6 @@ import {
 } from 'lucide-react';
 import { TreeView } from './TreeView';
 import { TrashView } from './TrashView';
-import { SearchResults } from './SearchResults';
 import { TagFilterBar } from './TagFilterBar';
 import { SortDropdown } from './SortDropdown';
 import { BulkActions } from './BulkActions';
@@ -36,6 +35,12 @@ import {
 } from '../lib/notes';
 import { exportNotesAsFile, importBackupFromFile } from '../lib/notes-io';
 import { api } from '../api/client';
+
+const SearchResults = React.lazy(() =>
+  import('./SearchResults').then(({ SearchResults: SearchResultsComponent }) => ({
+    default: SearchResultsComponent,
+  })),
+);
 
 interface SidebarProps {
   className?: string;
@@ -279,7 +284,9 @@ export function Sidebar({ className, onClose, onLogout }: SidebarProps) {
       {/* Main List Area */}
       <div className="flex-1 min-h-0 px-2">
         {searchQuery ? (
-          <SearchResults />
+          <Suspense fallback={<div className="p-4 text-xs text-zinc-500">Preparing search...</div>}>
+            <SearchResults />
+          </Suspense>
         ) : showTrash ? (
           <TrashView onBack={() => setShowTrash(false)} />
         ) : (

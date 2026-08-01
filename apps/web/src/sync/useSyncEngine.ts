@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { startDrainer, stopDrainer, notifyDrainer } from './drainer';
 import { pullDelta } from './pull';
 import { shouldSync, getSyncState, setSyncState } from './queue';
+import { resetStaleRemoteRecoveries } from '../db/db';
 import { v4 as uuidv4 } from 'uuid';
 
 const PULL_INTERVAL_MS = 60_000; // 60 seconds
@@ -36,20 +37,33 @@ export function useSyncEngine(): void {
       }
     })();
 
-    // Start the queue worker even if the session is temporarily offline.
-    // It self-gates on shouldSync(), and will begin draining as soon as
-    // the authenticated shell is mounted again.
-    startDrainer();
+    let cancelled = false;
+    const startSyncAfterRecoveryReset = async () => {
+      // Reset interrupted remote-missing recovery before starting the
+      // drainer/pull, so stale quarantine records cannot briefly appear as
+      // active sync state or race a new mutation.
+      await resetStaleRemoteRecoveries();
+      if (cancelled) return;
 
-    // Periodic delta pull (every 60 seconds).
-    if (shouldSync()) {
-      pullDelta().catch(() => {});
-      pullTimerRef.current = setInterval(() => {
-        if (shouldSync()) {
-          pullDelta().catch(() => {});
-        }
-      }, PULL_INTERVAL_MS);
-    }
+      // Start the queue worker even if the session is temporarily offline.
+      // It self-gates on shouldSync(), and will begin draining as soon as
+      // the authenticated shell is mounted again.
+      startDrainer();
+
+      // Periodic delta pull (every 60 seconds).
+      if (shouldSync()) {
+        pullDelta().catch(() => {});
+        pullTimerRef.current = setInterval(() => {
+          if (shouldSync()) {
+            pullDelta().catch(() => {});
+          }
+        }, PULL_INTERVAL_MS);
+      }
+    };
+    void startSyncAfterRecoveryReset().catch((error) => {
+      console.warn('Sync recovery initialization failed:', error);
+      if (!cancelled) startDrainer();
+    });
 
     // Window focus → debounced delta pull.
     const handleFocus = () => {
@@ -72,6 +86,7 @@ export function useSyncEngine(): void {
     window.addEventListener('online', handleOnline);
 
     return () => {
+      cancelled = true;
       stopDrainer();
       if (pullTimerRef.current) clearInterval(pullTimerRef.current);
       if (focusTimerRef.current) clearTimeout(focusTimerRef.current);

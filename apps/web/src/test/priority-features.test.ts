@@ -7,6 +7,7 @@ import {
   undoLastNoteChange,
 } from '../lib/note-history';
 import { htmlToSnippet, sanitizeHtml } from '../lib/sanitize';
+import { sortRootNotes } from '../lib/tags';
 
 describe('priority feature helpers', () => {
   beforeEach(() => {
@@ -41,6 +42,17 @@ describe('priority feature helpers', () => {
 
     it('produces plain text snippets without markup', () => {
       expect(htmlToSnippet('<h1>Hello</h1><p>world</p>')).toBe('Hello world');
+    });
+  });
+
+  describe('sorting', () => {
+    it('keeps ascending and descending title order deterministic', () => {
+      const notes = [
+        { id: 'b', title: 'Beta', order: 2, updatedAt: 0, createdAt: 0 },
+        { id: 'a', title: 'Alpha', order: 1, updatedAt: 0, createdAt: 0 },
+      ] as never[];
+      expect(sortRootNotes(notes, 'title', 'asc').map((note) => note.id)).toEqual(['a', 'b']);
+      expect(sortRootNotes(notes, 'title', 'desc').map((note) => note.id)).toEqual(['b', 'a']);
     });
   });
 

@@ -12,6 +12,33 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, 'src'),
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            const moduleId = id.replaceAll('\\\\', '/');
+            if (!moduleId.includes('/node_modules/')) return undefined;
+            if (
+              moduleId.includes('/react/') ||
+              moduleId.includes('/react-dom/') ||
+              moduleId.includes('/scheduler/')
+            ) {
+              return 'react-vendor';
+            }
+            if (moduleId.includes('/@tiptap/') || moduleId.includes('/prosemirror-')) {
+              return 'editor-vendor';
+            }
+            if (moduleId.includes('/dexie')) {
+              return 'storage-vendor';
+            }
+            if (moduleId.includes('/fuse.js/')) {
+              return 'search-vendor';
+            }
+            return undefined;
+          },
+        },
+      },
+    },
     server: {
       // Disable HMR and file watching via DISABLE_HMR env var (e.g. during agent edits).
       hmr: process.env.DISABLE_HMR !== 'true',

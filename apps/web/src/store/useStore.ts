@@ -106,9 +106,12 @@ export const useStore = create<AppState>()(
           if (!view) return state;
           return {
             searchQuery: view.searchQuery,
-            tagFilter: [...view.tagFilter],
-            sortMode: view.sortMode,
-            sortDirection: view.sortDirection,
+            tagFilter: [...(view.tagFilter ?? [])],
+            sortMode: view.sortMode ?? DEFAULT_SORT_MODE,
+            // Saved views created before direction support do not have this
+            // field. Falling back here prevents applying one from poisoning
+            // the sort comparator with `undefined`.
+            sortDirection: view.sortDirection ?? DEFAULT_SORT_DIRECTION,
           };
         }),
       selectedNoteIds: [],
@@ -144,7 +147,21 @@ export const useStore = create<AppState>()(
         if (fromVersion < 3 && out.sortDirection === undefined) {
           out.sortDirection = DEFAULT_SORT_DIRECTION;
         }
-        if (fromVersion < 4 || !Array.isArray(out.savedViews)) out.savedViews = [];
+        if (fromVersion < 4 || !Array.isArray(out.savedViews)) {
+          out.savedViews = [];
+        } else {
+          // Normalize persisted views as well as the top-level state. Older
+          // localStorage entries may predate sortDirection and tagFilter.
+          out.savedViews = out.savedViews.map((rawView) => {
+            const view = rawView as Partial<SavedView>;
+            return {
+              ...view,
+              tagFilter: Array.isArray(view.tagFilter) ? view.tagFilter : [],
+              sortMode: view.sortMode ?? DEFAULT_SORT_MODE,
+              sortDirection: view.sortDirection ?? DEFAULT_SORT_DIRECTION,
+            } as SavedView;
+          });
+        }
         return out;
       },
     },
