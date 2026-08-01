@@ -1,40 +1,143 @@
 import { Hono } from 'hono';
+import { and, asc, eq, gt, lte, or } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { notes, attachments } from '../db/schema.js';
-import { gte } from 'drizzle-orm';
+import { notes, attachments, tombstones } from '../db/schema.js';
 import { decrypt } from '../crypto.js';
-import type { SyncSnapshot, NoteDTO, AttachmentDTO } from '@mindleaf/shared';
+import type {
+  SyncCursor,
+  SyncSnapshot,
+  SyncStreamCursor,
+  TombstoneDTO,
+  NoteDTO,
+  AttachmentDTO,
+} from '@mindleaf/shared';
 import type { AppEnv } from '../env.js';
 
 export const syncRoutes = new Hono<AppEnv>();
 
+const DEFAULT_PAGE_SIZE = 250;
+const MAX_PAGE_SIZE = 500;
+
+function parseLimit(raw: string | undefined): number {
+  const parsed = raw ? Number.parseInt(raw, 10) : DEFAULT_PAGE_SIZE;
+  if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_PAGE_SIZE;
+  return Math.min(parsed, MAX_PAGE_SIZE);
+}
+
+function decodeCursor(raw: string | undefined): SyncCursor | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as Partial<SyncCursor>;
+    const boundary = parsed.boundary;
+    const streams = [parsed.notes, parsed.attachments, parsed.tombstones];
+    if (
+      typeof boundary !== 'number' ||
+      !Number.isFinite(boundary) ||
+      boundary < 0 ||
+      streams.some((stream) =>
+        !stream ||
+        typeof stream.id !== 'string' ||
+        typeof stream.updatedAt !== 'number' ||
+        !Number.isFinite(stream.updatedAt) ||
+        stream.updatedAt < 0 ||
+        stream.updatedAt > boundary
+      )
+    ) return null;
+    return parsed as SyncCursor;
+  } catch {
+    return null;
+  }
+}
+
+function initialStreamCursor(sinceMs: number): SyncStreamCursor {
+  return { updatedAt: Math.max(0, sinceMs), id: '' };
+}
+
+function cursorFromDate(id: string, date: Date): SyncStreamCursor {
+  return { id, updatedAt: date.getTime() };
+}
+
 /**
- * GET /api/sync/snapshot?since=<epoch_ms>
+ * GET /api/sync/snapshot?since=<epoch_ms>&cursor=<opaque>&limit=<n>
  *
- * Returns all notes and attachments whose `updatedAt` (or `createdAt`
- * for attachments) is newer than `since`. The client applies the
- * delta: notes with a higher `version` overwrite the local cache;
- * notes with a lower or equal version are skipped (local edits win).
- *
- * V1 does NOT paginate — for a single-user personal note app with
- * thousands of notes, the full payload is ~1-5 MB and acceptable at
- * a 60-second polling cadence.
+ * The first request captures a fixed server boundary. Every subsequent page
+ * reuses that boundary and advances each stream by `(timestamp, id)`, so a
+ * write racing the query is picked up by the next sync rather than skipped.
  */
 syncRoutes.get('/snapshot', async (c) => {
-  const sinceParam = c.req.query('since');
-  const sinceMs = sinceParam ? parseInt(sinceParam, 10) : 0;
-  if (isNaN(sinceMs)) {
+  const limit = parseLimit(c.req.query('limit'));
+  const rawSince = c.req.query('since');
+  const sinceMs = rawSince ? Number.parseInt(rawSince, 10) : 0;
+  if (!Number.isFinite(sinceMs) || sinceMs < 0) {
     return c.json({ error: 'Invalid since parameter' }, 400);
   }
-  const sinceDate = new Date(sinceMs);
 
-  // Fetch notes updated after `since`.
+  const decoded = decodeCursor(c.req.query('cursor'));
+  if (c.req.query('cursor') && !decoded) {
+    return c.json({ error: 'Invalid sync cursor' }, 400);
+  }
+
+  const cursor: SyncCursor = decoded ?? {
+    boundary: Date.now(),
+    notes: initialStreamCursor(sinceMs),
+    attachments: initialStreamCursor(sinceMs),
+    tombstones: initialStreamCursor(sinceMs),
+  };
+  const boundary = new Date(cursor.boundary);
+
   const noteRows = await db
     .select()
     .from(notes)
-    .where(gte(notes.updatedAt, sinceDate));
+    .where(and(
+      lte(notes.updatedAt, boundary),
+      or(
+        gt(notes.updatedAt, new Date(cursor.notes?.updatedAt ?? 0)),
+        and(
+          eq(notes.updatedAt, new Date(cursor.notes?.updatedAt ?? 0)),
+          gt(notes.id, cursor.notes?.id ?? ''),
+        ),
+      ),
+    ))
+    .orderBy(asc(notes.updatedAt), asc(notes.id))
+    .limit(limit + 1);
 
-  const noteDtos: NoteDTO[] = noteRows.map((r) => {
+  const attachmentRows = await db
+    .select()
+    .from(attachments)
+    .where(and(
+      lte(attachments.createdAt, boundary),
+      or(
+        gt(attachments.createdAt, new Date(cursor.attachments?.updatedAt ?? 0)),
+        and(
+          eq(attachments.createdAt, new Date(cursor.attachments?.updatedAt ?? 0)),
+          gt(attachments.id, cursor.attachments?.id ?? ''),
+        ),
+      ),
+    ))
+    .orderBy(asc(attachments.createdAt), asc(attachments.id))
+    .limit(limit + 1);
+
+  const tombstoneRows = await db
+    .select()
+    .from(tombstones)
+    .where(and(
+      lte(tombstones.deletedAt, boundary),
+      or(
+        gt(tombstones.deletedAt, new Date(cursor.tombstones?.updatedAt ?? 0)),
+        and(
+          eq(tombstones.deletedAt, new Date(cursor.tombstones?.updatedAt ?? 0)),
+          gt(tombstones.id, cursor.tombstones?.id ?? ''),
+        ),
+      ),
+    ))
+    .orderBy(asc(tombstones.deletedAt), asc(tombstones.id))
+    .limit(limit + 1);
+
+  const pageNotes = noteRows.slice(0, limit);
+  const pageAttachments = attachmentRows.slice(0, limit);
+  const pageTombstones = tombstoneRows.slice(0, limit);
+
+  const noteDtos: NoteDTO[] = pageNotes.map((r) => {
     let content = '';
     try {
       content = r.contentCt && r.contentNonce ? decrypt(r.contentCt, r.contentNonce) : '';
@@ -57,13 +160,7 @@ syncRoutes.get('/snapshot', async (c) => {
     };
   });
 
-  // Fetch attachments created after `since`.
-  const attRows = await db
-    .select()
-    .from(attachments)
-    .where(gte(attachments.createdAt, sinceDate));
-
-  const attDtos: AttachmentDTO[] = attRows.map((a) => ({
+  const attachmentDtos: AttachmentDTO[] = pageAttachments.map((a) => ({
     id: a.id,
     noteId: a.noteId,
     r2Key: a.r2Key,
@@ -73,11 +170,33 @@ syncRoutes.get('/snapshot', async (c) => {
     createdAt: a.createdAt.getTime(),
   }));
 
-  const snapshot: SyncSnapshot = {
-    serverNow: Date.now(),
-    notes: noteDtos,
-    attachments: attDtos,
-  };
+  const tombstoneDtos: TombstoneDTO[] = pageTombstones.map((row) => ({
+    resourceType: row.resourceType === 'attachment' ? 'attachment' : 'note',
+    resourceId: row.resourceId,
+    deletedAt: row.deletedAt.getTime(),
+  }));
 
+  const nextCursor: SyncCursor = {
+    boundary: cursor.boundary,
+    notes: pageNotes.length > 0
+      ? cursorFromDate(pageNotes[pageNotes.length - 1].id, pageNotes[pageNotes.length - 1].updatedAt)
+      : cursor.notes,
+    attachments: pageAttachments.length > 0
+      ? cursorFromDate(pageAttachments[pageAttachments.length - 1].id, pageAttachments[pageAttachments.length - 1].createdAt)
+      : cursor.attachments,
+    tombstones: pageTombstones.length > 0
+      ? cursorFromDate(pageTombstones[pageTombstones.length - 1].id, pageTombstones[pageTombstones.length - 1].deletedAt)
+      : cursor.tombstones,
+  };
+  const hasMore = noteRows.length > limit || attachmentRows.length > limit || tombstoneRows.length > limit;
+
+  const snapshot: SyncSnapshot = {
+    serverNow: cursor.boundary,
+    notes: noteDtos,
+    attachments: attachmentDtos,
+    tombstones: tombstoneDtos,
+    hasMore,
+    nextCursor: hasMore ? nextCursor : null,
+  };
   return c.json(snapshot);
 });

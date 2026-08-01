@@ -11,9 +11,9 @@ import { backupRoutes } from './routes/backup.js';
 import { sessionMiddleware } from './middleware/auth.js';
 import { pinoLogger } from './middleware/logger.js';
 import { bodySizeLimit, DEFAULT_API_BYTES } from './middleware/body-limit.js';
-import { db } from './db/index.js';
+import { db, purgeExpiredTombstones, TOMBSTONE_RETENTION_DAYS } from './db/index.js';
 import { users, notes } from './db/schema.js';
-import { eq } from 'drizzle-orm';
+import { count, eq } from 'drizzle-orm';
 import type { AppEnv } from './env.js';
 
 const app = new Hono<AppEnv>();
@@ -78,6 +78,22 @@ app.use(
 // --- Health check (no auth required) ---
 app.get('/healthz', (c) => c.json({ ok: true }));
 
+// Keep the deletion journal bounded, but retain it long enough for normal
+// offline devices to reconnect. This is intentionally a best-effort single
+// instance job; a future multi-instance deployment should move it to a
+// database scheduler/advisory-lock job.
+const tombstoneCleanupTimer = setInterval(() => {
+  void purgeExpiredTombstones()
+    .then((count) => {
+      if (count > 0) console.log(`[sync] purged ${count} tombstone(s)`);
+    })
+    .catch((error) => console.warn('[sync] tombstone cleanup failed:', error));
+}, 24 * 60 * 60 * 1000);
+tombstoneCleanupTimer.unref?.();
+void purgeExpiredTombstones().catch((error) => {
+  console.warn(`[sync] initial tombstone cleanup failed (retention=${TOMBSTONE_RETENTION_DAYS}d):`, error);
+});
+
 // --- API routes ---
 // Auth routes don't require a session — they CREATE one.
 app.route('/api/auth', authRoutes);
@@ -97,14 +113,14 @@ app.get('/api/me/info', async (c) => {
   if (userRow.length === 0) {
     return c.json({ createdAt: 0, noteCount: 0 });
   }
-  // Count only active (non-deleted) notes.
-  const activeNoteRows = await db
-    .select()
+  // Count in the database instead of loading every note into memory.
+  const [{ noteCount }] = await db
+    .select({ noteCount: count() })
     .from(notes)
     .where(eq(notes.isDeleted, false));
   return c.json({
     createdAt: userRow[0].createdAt.getTime(),
-    noteCount: activeNoteRows.length,
+    noteCount: Number(noteCount),
   });
 });
 

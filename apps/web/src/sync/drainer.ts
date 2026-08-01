@@ -1,54 +1,28 @@
 /**
- * Sync drainer — a background worker that processes the
- * `pending_mutations` queue and pushes each mutation to the backend.
- *
- * Lifecycle:
- *   - Started by the sync engine hook (useSyncEngine) on app mount.
- *   - Runs on a 5-second interval + event-driven (notified by the
- *     queue when a new mutation is enqueued).
- *   - Stops when the component unmounts or the user logs out.
- *
- * Processing order: mutations are processed in `createdAt` order
- * (FIFO) so that a note create is pushed before its subsequent patches.
- *
- * Error handling:
- *   - 200 OK → delete mutation, update note version + clear dirty.
- *   - 409 Conflict → mark `conflicted`, skip (UI will show modal).
- *   - Network error / 5xx → increment attempts, mark `failed`.
- *     Retry on next drain cycle. After MAX_ATTEMPTS, leave as `failed`
- *     for user investigation.
+ * Sync drainer — processes the IndexedDB mutation queue in FIFO order.
+ * A Web Lock prevents two browser tabs from pushing the same mutation at
+ * the same time; browsers without Web Locks retain the existing local guard.
  */
-
 import { db, type PendingMutation } from '../db/db';
 import { pushMutation, isExhausted } from './push';
 import { shouldSync } from '../api/client';
+import { withSyncLock } from './coordination';
 
 const DRAIN_INTERVAL_MS = 5000;
-
 let drainTimer: ReturnType<typeof setInterval> | null = null;
 let draining = false;
 
-/**
- * Process all pending mutations in order. Called on a timer and
- * on-demand (when a new mutation is enqueued).
- */
-export async function drainQueue(): Promise<void> {
+async function drainQueueUnlocked(): Promise<void> {
   if (draining || !shouldSync()) return;
   draining = true;
-
   try {
-    // Fetch pending mutations in createdAt order.
     const pending = await db.pendingMutations
       .where('status')
       .anyOf(['pending', 'failed'])
       .sortBy('createdAt');
-
     for (const mutation of pending) {
-      // Skip exhausted mutations (they need user intervention).
       if (mutation.status === 'failed' && isExhausted(mutation)) continue;
-
       const result = await pushMutation(mutation);
-
       if (result.status === 'ok') {
         await db.pendingMutations.delete(mutation.id);
       } else if (result.status === 'conflict') {
@@ -56,7 +30,7 @@ export async function drainQueue(): Promise<void> {
           status: 'conflicted',
           lastError: 'Conflict — note was updated elsewhere',
         });
-      } else if (result.status === 'failed') {
+      } else {
         await db.pendingMutations.update(mutation.id, {
           status: 'failed',
           lastError: result.error,
@@ -64,30 +38,30 @@ export async function drainQueue(): Promise<void> {
       }
     }
   } catch (err) {
-    // Unexpected error in the drainer itself — log and continue.
-    // The timer will retry on the next tick.
     console.error('[sync] drainer error:', err);
   } finally {
     draining = false;
   }
 }
 
-/**
- * Start the drainer. Called once on app mount by useSyncEngine.
- * Safe to call multiple times — only one timer is active.
- */
-export function startDrainer(): void {
-  if (drainTimer) return;
-  // Immediately attempt a drain (catches mutations enqueued before mount).
-  drainQueue().catch(() => {});
-  drainTimer = setInterval(() => {
-    drainQueue().catch(() => {});
-  }, DRAIN_INTERVAL_MS);
+export async function drainQueue(): Promise<void> {
+  if (draining || !shouldSync()) return;
+  try {
+    await withSyncLock(drainQueueUnlocked);
+  } catch (err) {
+    // A non-supporting browser may be unable to acquire the fallback lease
+    // during a short contention window. The next interval/notification will
+    // retry; do not turn this into a visible sync failure.
+    console.debug('[sync] drain lock unavailable:', err);
+  }
 }
 
-/**
- * Stop the drainer. Called on unmount or logout.
- */
+export function startDrainer(): void {
+  if (drainTimer) return;
+  void drainQueue();
+  drainTimer = setInterval(() => void drainQueue(), DRAIN_INTERVAL_MS);
+}
+
 export function stopDrainer(): void {
   if (drainTimer) {
     clearInterval(drainTimer);
@@ -95,10 +69,6 @@ export function stopDrainer(): void {
   }
 }
 
-/**
- * Notify the drainer that a new mutation was enqueued.
- * Triggers an immediate drain (debounced by the `draining` guard).
- */
 export function notifyDrainer(): void {
-  drainQueue().catch(() => {});
+  void drainQueue();
 }

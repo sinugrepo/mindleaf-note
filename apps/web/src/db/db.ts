@@ -352,18 +352,17 @@ export async function gcAttachments(): Promise<number> {
   const allAtts = await db.attachments.toArray();
   if (allAtts.length === 0) return 0;
 
-  const notes = await db.notes.toArray();
   const referenced = new Set<string>();
   const ATTACHMENT_RE = new RegExp(
     `<img\\s+[^>]*src="${ATTACHMENT_SRC_PREFIX}([^"]+)"`,
     'gi',
   );
-  for (const note of notes) {
-    if (!note.content) continue;
+  await db.notes.each((note) => {
+    if (!note.content) return;
     for (const m of note.content.matchAll(ATTACHMENT_RE)) {
       referenced.add(m[1]);
     }
-  }
+  });
 
   const orphans = allAtts
     .filter((a) => !referenced.has(a.id))

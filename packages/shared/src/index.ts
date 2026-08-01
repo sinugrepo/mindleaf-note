@@ -97,15 +97,38 @@ export interface MeInfoResponse {
 // Sync
 // ---------------------------------------------------------------------------
 
+/** Stable cursor for one ordered sync stream. */
+export interface SyncStreamCursor {
+  updatedAt: number;
+  id: string;
+}
+
+/** Cursor state for the three independently paginated sync streams. */
+export interface SyncCursor {
+  boundary: number;
+  notes: SyncStreamCursor | null;
+  attachments: SyncStreamCursor | null;
+  tombstones: SyncStreamCursor | null;
+}
+
+export interface TombstoneDTO {
+  resourceType: 'note' | 'attachment';
+  resourceId: string;
+  deletedAt: number;
+}
+
 /**
- * Delta-sync snapshot returned by `GET /api/sync/snapshot?since=<epoch_ms>`.
- * The client applies notes whose `version` is newer than the local copy
- * and skips the rest.
+ * Delta-sync snapshot returned by `GET /api/sync/snapshot`.
+ * Each stream is ordered by `(updatedAt, id)` and bounded by `boundary`.
+ * The client must continue with `nextCursor` while `hasMore` is true.
  */
 export interface SyncSnapshot {
   serverNow: number;
   notes: NoteDTO[];
   attachments: AttachmentDTO[];
+  tombstones: TombstoneDTO[];
+  hasMore: boolean;
+  nextCursor: SyncCursor | null;
 }
 
 // ---------------------------------------------------------------------------

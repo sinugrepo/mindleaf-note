@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { db } from '../db/index.js';
-import { notes, attachments } from '../db/schema.js';
-import { eq, sql } from 'drizzle-orm';
+import { notes, attachments, tombstones } from '../db/schema.js';
+import { and, eq, sql } from 'drizzle-orm';
 import { encrypt, decrypt } from '../crypto.js';
 import { htmlToPlaintext } from '../html-to-text.js';
 import {
@@ -26,9 +26,9 @@ import type { AppEnv } from '../env.js';
 export const backupRoutes = new Hono<AppEnv>();
 
 // Phase 10 — Per-route body-size override. The 5 MB global limit
-// applies to most API routes (auth, CRUD JSON). Importing a 150 MB
-// `.treenote` file is the legitimate exception: the upload is
-// stream-chunked so the VPS never holds the full body in RAM.
+// applies to most API routes (auth, CRUD JSON). Importing a backup
+// is the legitimate exception; the transport ceiling is 150 MB, while
+// the handler rejects files above its safer 100 MB parsing budget.
 // Export path does not need an override — it returns JSON, not
 // receives it, so its output size matters (we cap at 110 MB binary
 // in MAX_EXPORT_TOTAL_BYTES during R2 fan-out).
@@ -255,6 +255,8 @@ backupRoutes.post(
 //      presign a PUT URL. The browser PUTs the blob after the 200.
 
 const MAX_IMPORT_BYTES = 100 * 1024 * 1024; // 100 MB upper bound
+const MAX_IMPORT_NOTES = 50_000;
+const MAX_IMPORT_ATTACHMENTS = 50_000;
 
 backupRoutes.post(
   '/import/full',
@@ -321,6 +323,65 @@ backupRoutes.post(
     const rawAttachments = Array.isArray(obj.attachments)
       ? (obj.attachments as unknown[])
       : [];
+    // Reject oversized arrays before any per-item database lookup. Also
+    // reject duplicate IDs in one backup, since silently choosing one
+    // payload would make the restore non-deterministic.
+    if (rawNotes.length > MAX_IMPORT_NOTES) {
+      return c.json({ error: `Too many notes. Max ${MAX_IMPORT_NOTES}.` }, 413);
+    }
+    if (rawAttachments.length > MAX_IMPORT_ATTACHMENTS) {
+      return c.json(
+        { error: `Too many attachments. Max ${MAX_IMPORT_ATTACHMENTS}.` },
+        413,
+      );
+    }
+    const noteIds = new Set<string>();
+    for (const raw of rawNotes) {
+      if (!raw || typeof raw !== 'object') continue;
+      const candidate = raw as { id?: unknown };
+      if (typeof candidate.id !== 'string') continue;
+      if (noteIds.has(candidate.id)) {
+        return c.json(
+          { error: `Duplicate note id in backup: ${candidate.id}` },
+          400,
+        );
+      }
+      noteIds.add(candidate.id);
+    }
+    const attachmentIds = new Set<string>();
+    for (const raw of rawAttachments) {
+      if (!raw || typeof raw !== 'object') continue;
+      const candidate = raw as { id?: unknown };
+      if (typeof candidate.id !== 'string') continue;
+      if (attachmentIds.has(candidate.id)) {
+        return c.json(
+          { error: `Duplicate attachment id in backup: ${candidate.id}` },
+          400,
+        );
+      }
+      attachmentIds.add(candidate.id);
+    }
+    // Reject attachment ID ownership conflicts before changing any notes.
+    // Silently skipping one would produce a successful-looking backup with
+    // missing images and could leave the local cache pointing at nothing.
+    for (const raw of rawAttachments) {
+      if (!raw || typeof raw !== 'object') continue;
+      const candidate = raw as { id?: unknown; noteId?: unknown };
+      if (typeof candidate.id !== 'string' || typeof candidate.noteId !== 'string') continue;
+      const existing = await db
+        .select({ noteId: attachments.noteId })
+        .from(attachments)
+        .where(eq(attachments.id, candidate.id))
+        .limit(1);
+      if (existing.length > 0 && existing[0].noteId !== candidate.noteId) {
+        return c.json(
+          { error: `Attachment id is already assigned to another note: ${candidate.id}` },
+          409,
+        );
+      }
+    }
+    // The byte and item limits protect the subsequent per-row encryption,
+    // SQL, and presign loops from pathological backup payloads.
 
     // Insert notes. Server-encrypts content with master key and
     // bumps `version` so a subsequent PATCH will need If-Match: 1
@@ -382,26 +443,11 @@ backupRoutes.post(
       // expressions, so there's no injection risk in the cast.
       const tsvectorSql = sql`to_tsvector('simple', ${title} || ' ' || ${htmlToPlaintext(plaintext)})` as unknown as string;
 
-      await db
-        .insert(notes)
-        .values({
-          id,
-          parentId,
-          title,
-          contentCt,
-          contentNonce,
-          isFolder,
-          isExpanded,
-          orderIdx,
-          tags,
-          createdAt: now,
-          updatedAt: now,
-          version: 1,
-          contentTsvector: tsvectorSql,
-        })
-        .onConflictDoUpdate({
-          target: notes.id,
-          set: {
+      await db.transaction(async (tx) => {
+        await tx
+          .insert(notes)
+          .values({
+            id,
             parentId,
             title,
             contentCt,
@@ -410,11 +456,38 @@ backupRoutes.post(
             isExpanded,
             orderIdx,
             tags,
+            createdAt: now,
             updatedAt: now,
-            version: sql`${notes.version} + 1`,
+            version: 1,
             contentTsvector: tsvectorSql,
-          },
-        });
+          })
+          .onConflictDoUpdate({
+            target: notes.id,
+            set: {
+              parentId,
+              title,
+              contentCt,
+              contentNonce,
+              isFolder,
+              isExpanded,
+              orderIdx,
+              tags,
+              isDeleted: false,
+              deletedAt: null,
+              updatedAt: now,
+              version: sql`${notes.version} + 1`,
+              contentTsvector: tsvectorSql,
+            },
+          });
+        // A backup restore can recreate a previously purged stable ID.
+        // Remove only its note tombstone in the same transaction.
+        await tx
+          .delete(tombstones)
+          .where(and(
+            eq(tombstones.resourceType, 'note'),
+            eq(tombstones.resourceId, id),
+          ));
+      });
       notesImported += 1;
     }
 
@@ -445,25 +518,64 @@ backupRoutes.post(
       const createdAt =
         typeof a.createdAt === 'number' ? a.createdAt : now.getTime();
 
-      await db
-        .insert(attachments)
-        .values({
-          id: attachmentId,
-          noteId: a.noteId,
-          r2Key,
-          mime: a.mime,
-          name: typeof a.name === 'string' ? a.name : '',
-          sizeBytes: 0, // unknown until client completes PUT
-          createdAt: new Date(createdAt),
-        })
-        // Intentional `onConflictDoNothing`: if the user is
-        // re-importing their own .treenote and an attachment row
-        // already exists for this id, we do NOT want to overwrite
-        // the r2Key + mime of the existing record (existing blob is
-        // canonical). The PUT URL we issue may then be wasted in
-        // that edge case, but the import still succeeds and the
-        // user's existing R2 object is intact.
-        .onConflictDoNothing();
+      const created = await db.transaction(async (tx) => {
+        // Re-check ownership inside the transaction. The preflight check
+        // above cannot protect against another request inserting the same
+        // ID between validation and this write.
+        const existing = await tx
+          .select({ noteId: attachments.noteId })
+          .from(attachments)
+          .where(eq(attachments.id, attachmentId))
+          .limit(1);
+        if (existing.length > 0 && existing[0].noteId !== a.noteId) {
+          return { conflict: true, created: false };
+        }
+        if (existing.length > 0) {
+          // Preserve the canonical existing R2 object and avoid issuing an
+          // orphan presigned key. The row is already owned by this note.
+          await tx
+            .delete(tombstones)
+            .where(and(
+              eq(tombstones.resourceType, 'attachment'),
+              eq(tombstones.resourceId, attachmentId),
+            ));
+          return { conflict: false, created: false };
+        }
+        await tx
+          .insert(attachments)
+          .values({
+            id: attachmentId,
+            noteId: a.noteId,
+            r2Key,
+            mime: a.mime,
+            name: typeof a.name === 'string' ? a.name : '',
+            sizeBytes: 0, // unknown until client completes PUT
+            createdAt: new Date(createdAt),
+          } as typeof attachments.$inferInsert)
+          .onConflictDoNothing();
+        const stored = await tx
+          .select({ noteId: attachments.noteId })
+          .from(attachments)
+          .where(eq(attachments.id, attachmentId))
+          .limit(1);
+        if (stored.length === 0 || stored[0].noteId !== a.noteId) {
+          return { conflict: true, created: false };
+        }
+        await tx
+          .delete(tombstones)
+          .where(and(
+            eq(tombstones.resourceType, 'attachment'),
+            eq(tombstones.resourceId, attachmentId),
+          ));
+        return { conflict: false, created: true };
+      });
+      if (created.conflict) {
+        return c.json(
+          { error: `Attachment id is already assigned to another note: ${attachmentId}` },
+          409,
+        );
+      }
+      if (!created.created) continue;
 
       const uploadUrl = await presignPut(r2Key);
       uploads.push({ attachmentId, uploadUrl, r2Key });

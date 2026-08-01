@@ -8,6 +8,7 @@ import {
   timestamp,
   index,
   customType,
+  uniqueIndex,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 
@@ -120,6 +121,7 @@ export const notes = pgTable(
   },
   (table) => ({
     parentIdx: index('notes_parent_idx').on(table.parentId),
+    updatedAtIdx: index('notes_updated_at_idx').on(table.updatedAt),
     deletedParentIdx: index('notes_deleted_parent_idx').on(
       table.isDeleted,
       table.parentId,
@@ -158,6 +160,25 @@ export const attachments = pgTable(
   },
   (table) => ({
     noteIdx: index('attachments_note_idx').on(table.noteId),
+    createdAtIdx: index('attachments_created_at_idx').on(table.createdAt),
+  }),
+);
+
+/**
+ * Deletion journal consumed by delta sync. Rows remain after the source row
+ * is permanently deleted so offline clients can remove their stale cache.
+ */
+export const tombstones = pgTable(
+  'tombstones',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    resourceType: text('resource_type').notNull(),
+    resourceId: uuid('resource_id').notNull(),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    deletedAtIdx: index('tombstones_deleted_at_idx').on(table.deletedAt),
+    resourceIdx: uniqueIndex('tombstones_resource_idx').on(table.resourceType, table.resourceId),
   }),
 );
 
