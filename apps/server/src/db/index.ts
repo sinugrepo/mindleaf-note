@@ -1,10 +1,12 @@
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
+import { lt } from 'drizzle-orm';
 import {
   users,
   sessions,
   notes,
   attachments,
+  tombstones,
 } from './schema.js';
 
 /**
@@ -24,7 +26,7 @@ if (!connectionString) {
 const queryClient = postgres(connectionString, { max: 5 });
 
 export const db = drizzle(queryClient, {
-  schema: { users, sessions, notes, attachments },
+  schema: { users, sessions, notes, attachments, tombstones },
 });
 
 /**
@@ -33,3 +35,25 @@ export const db = drizzle(queryClient, {
  * when both are imported in the same file.
  */
 export { queryClient as pgClient };
+
+/**
+ * Remove deletion-journal rows only after the configured offline recovery
+ * window. Clients that remain offline longer than this window cannot receive
+ * historical tombstones and must recover from a fresh backup/full snapshot.
+ */
+export const TOMBSTONE_RETENTION_DAYS = Number.parseInt(
+  process.env.TOMBSTONE_RETENTION_DAYS ?? '90',
+  10,
+);
+
+export async function purgeExpiredTombstones(): Promise<number> {
+  const days = Number.isFinite(TOMBSTONE_RETENTION_DAYS) && TOMBSTONE_RETENTION_DAYS > 0
+    ? TOMBSTONE_RETENTION_DAYS
+    : 90;
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const deleted = await db
+    .delete(tombstones)
+    .where(lt(tombstones.deletedAt, cutoff))
+    .returning({ id: tombstones.id });
+  return deleted.length;
+}

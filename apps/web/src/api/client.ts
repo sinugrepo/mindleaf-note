@@ -236,9 +236,24 @@ export const api = {
 
   // --- Sync ---
 
-  async getSyncSnapshot(sinceMs: number): Promise<SyncSnapshot> {
-    const qs = sinceMs > 0 ? `?since=${sinceMs}` : '';
-    return apiFetch(`/sync/snapshot${qs}`);
+  async getSyncSnapshot(
+    sinceMs: number,
+    cursor?: import('@mindleaf/shared').SyncCursor,
+    limit = 250,
+  ): Promise<SyncSnapshot> {
+    const params = new URLSearchParams();
+    if (sinceMs > 0) params.set('since', String(sinceMs));
+    params.set('limit', String(limit));
+    if (cursor) {
+      params.set(
+        'cursor',
+        btoa(JSON.stringify(cursor))
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=+$/g, ''),
+      );
+    }
+    return apiFetch(`/sync/snapshot?${params.toString()}`);
   },
 
   // --- Search ---

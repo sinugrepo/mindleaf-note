@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
 import { db } from '../db/index.js';
-import { attachments, notes } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { attachments, notes, tombstones } from '../db/schema.js';
+import { and, eq } from 'drizzle-orm';
 import {
   s3Client,
   presignPut,
   presignGet,
+  headR2Object,
   generateR2Key,
 } from '../r2.js';
 import { rateLimit } from '../middleware/ratelimit.js';
@@ -64,9 +65,9 @@ uploadRoutes.post(
       return c.json({ error: `Unsupported file type: ${body.mime}` }, 400);
     }
 
-    if (body.sizeBytes > MAX_UPLOAD_BYTES) {
+    if (!Number.isFinite(body.sizeBytes) || body.sizeBytes <= 0 || body.sizeBytes > MAX_UPLOAD_BYTES) {
       return c.json(
-        { error: `File too large. Max ${MAX_UPLOAD_BYTES / 1024 / 1024} MB.` },
+        { error: `Invalid file size. Must be greater than 0 and at most ${MAX_UPLOAD_BYTES / 1024 / 1024} MB.` },
         413,
       );
     }
@@ -89,17 +90,49 @@ uploadRoutes.post(
     // Reusing that UUID on retries keeps IndexedDB, Postgres, and the R2
     // metadata row aligned. A lost response can therefore safely repeat
     // presign without creating an orphan row with a different id.
-    await db
-      .insert(attachments)
-      .values({
-        id: attachmentId,
-        noteId: body.noteId,
-        r2Key: requestedR2Key,
-        mime: body.mime,
-        name: body.filename,
-        sizeBytes: body.sizeBytes,
-      })
-      .onConflictDoNothing();
+    // Validate ownership before touching the tombstone journal: a reused
+    // ID belonging to another note must not erase that note's recovery row.
+    const existingAttachment = await db
+      .select({ noteId: attachments.noteId })
+      .from(attachments)
+      .where(eq(attachments.id, attachmentId))
+      .limit(1);
+    if (existingAttachment.length > 0 && existingAttachment[0].noteId !== body.noteId) {
+      return c.json({ error: 'Attachment id is already assigned to another note' }, 409);
+    }
+    const ownership = await db.transaction(async (tx) => {
+      await tx
+        .insert(attachments)
+        .values({
+          id: attachmentId,
+          noteId: body.noteId,
+          r2Key: requestedR2Key,
+          mime: body.mime,
+          name: body.filename,
+          sizeBytes: body.sizeBytes,
+        })
+        .onConflictDoNothing();
+      const stored = await tx
+        .select({ noteId: attachments.noteId })
+        .from(attachments)
+        .where(eq(attachments.id, attachmentId))
+        .limit(1);
+      if (stored.length === 0 || stored[0].noteId !== body.noteId) {
+        return false;
+      }
+      // A stable attachment ID may be recreated after a remote deletion.
+      // Remove its old tombstone atomically only after ownership is proven.
+      await tx
+        .delete(tombstones)
+        .where(and(
+          eq(tombstones.resourceType, 'attachment'),
+          eq(tombstones.resourceId, attachmentId),
+        ));
+      return true;
+    });
+    if (!ownership) {
+      return c.json({ error: 'Attachment id is already assigned to another note' }, 409);
+    }
 
     const rows = await db
       .select()
@@ -131,8 +164,7 @@ uploadRoutes.post(
 
 // --- POST /attachments/:id/complete ---
 // Called by the browser after a successful PUT to R2. Confirms the
-// attachment is uploaded. (In V1 we trust the client's confirmation;
-// a future enhancement could HEAD the R2 object to verify.)
+// attachment exists and records the authoritative object size via HEAD.
 uploadRoutes.post('/attachments/:id/complete', async (c) => {
   const id = c.req.param('id');
   const rows = await db
@@ -144,9 +176,31 @@ uploadRoutes.post('/attachments/:id/complete', async (c) => {
   if (rows.length === 0) {
     return c.json({ error: 'Attachment not found' }, 404);
   }
+  if (!s3Client || !rows[0].r2Key) {
+    return c.json({ error: 'Attachment storage is not configured' }, 503);
+  }
 
-  // The r2Key was already set at presign time; nothing to update
-  // here in V1. Return the confirmed attachment.
+  // Confirm the object exists and record the authoritative byte count.
+  // A client cannot mark an upload complete merely by calling this route.
+  try {
+    const head = await headR2Object(rows[0].r2Key);
+    const actualSize = Number(head.ContentLength ?? -1);
+    const expectedSize = rows[0].sizeBytes;
+    if (!Number.isFinite(actualSize) || actualSize < 0 || actualSize > MAX_UPLOAD_BYTES) {
+      return c.json({ error: 'Uploaded object exceeds the size limit' }, 413);
+    }
+    if (expectedSize > 0 && actualSize !== expectedSize) {
+      return c.json({ error: 'Uploaded object size does not match the requested size' }, 409);
+    }
+    await db
+      .update(attachments)
+      .set({ sizeBytes: actualSize })
+      .where(eq(attachments.id, id));
+  } catch (error) {
+    console.warn(`[upload] R2 object missing or unavailable for ${id}:`, error);
+    return c.json({ error: 'Uploaded object could not be verified' }, 409);
+  }
+
   return c.json({ ok: true, attachmentId: id });
 });
 

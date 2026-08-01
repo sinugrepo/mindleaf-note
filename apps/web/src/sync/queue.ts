@@ -18,8 +18,10 @@
 import { v4 as uuidv4 } from 'uuid';
 import { db, type PendingMutation } from '../db/db';
 import type { Note, Attachment } from '../types';
+import type { TombstoneDTO } from '@mindleaf/shared';
 import { shouldSync } from '../api/client';
 import { notifyDrainer } from './drainer';
+import { withSyncLock } from './coordination';
 import { isHistoryReplay, recordNoteChange } from '../lib/note-history';
 
 // ---------------------------------------------------------------------------
@@ -108,32 +110,71 @@ export function queuedPatchNote(
 ): Promise<void> {
   const previous = patchChains.get(noteId) ?? Promise.resolve();
   const operation = previous.catch(() => undefined).then(async () => {
-    const current = await db.notes.get(noteId);
-    const currentVersion = current?.version ?? 0;
-    const optimisticVersion = currentVersion + 1;
+    const { current, currentVersion, before } = await withSyncLock(async () => {
+      const current = await db.notes.get(noteId);
+      const currentVersion = current?.version ?? 0;
+      const optimisticVersion = currentVersion + 1;
 
-    // Map `order` → `orderIdx` in the API payload (the backend column
-    // is `order_idx`, the DTO field is `orderIdx`).
-    const apiPayload: Record<string, unknown> = { ...updates };
-    if (updates.order !== undefined) {
-      apiPayload.orderIdx = updates.order;
-      delete apiPayload.order;
-    }
-
-    const before: Partial<Pick<Note, 'title' | 'content' | 'isExpanded' | 'order' | 'parentId' | 'tags'>> = {};
-    for (const field of Object.keys(updates) as Array<keyof typeof updates>) {
-      if (current && current[field] !== undefined) {
-        (before as Record<string, unknown>)[field] = current[field];
+      // Map `order` → `orderIdx` in the API payload (the backend column
+      // is `order_idx`, the DTO field is `orderIdx`).
+      const apiPayload: Record<string, unknown> = { ...updates };
+      if (updates.order !== undefined) {
+        apiPayload.orderIdx = updates.order;
+        delete apiPayload.order;
       }
-    }
 
-    await db.notes.update(noteId, {
-      ...updates,
-      updatedAt: now,
-      version: optimisticVersion,
-      dirty: true,
+      const before: Partial<Pick<Note, 'title' | 'content' | 'isExpanded' | 'order' | 'parentId' | 'tags'>> = {};
+      for (const field of Object.keys(updates) as Array<keyof typeof updates>) {
+        if (current && current[field] !== undefined) {
+          (before as Record<string, unknown>)[field] = current[field];
+        }
+      }
+
+      await db.notes.update(noteId, {
+        ...updates,
+        updatedAt: now,
+        version: optimisticVersion,
+        dirty: true,
+      });
+
+      // Coalesce every not-yet-started patch for this note. Keeping the
+      // earliest mutation preserves its original baseVersion, while merging
+      // the payloads in creation order preserves the latest value per field.
+      // The cross-tab sync lock covers the read/merge/delete/write sequence;
+      // without it, two tabs could each select a different first row and
+      // leave stale patches behind.
+      const queuedPatches = await db.pendingMutations
+        .where('resourceId')
+        .equals(noteId)
+        .filter((mutation) => mutation.type === 'patch_note' && mutation.status === 'pending')
+        .sortBy('createdAt');
+      if (queuedPatches.length > 0) {
+        const [first, ...rest] = queuedPatches;
+        let mergedPayload: Record<string, unknown> = {};
+        for (const queued of queuedPatches) {
+          try {
+            mergedPayload = { ...mergedPayload, ...JSON.parse(queued.payload) };
+          } catch {
+            // Keep valid fields from other queue records if one old payload is malformed.
+          }
+        }
+        mergedPayload = { ...mergedPayload, ...apiPayload };
+        await db.transaction('rw', db.pendingMutations, async () => {
+          await db.pendingMutations.update(first.id, {
+            payload: JSON.stringify(mergedPayload),
+            lastError: null,
+          });
+          if (rest.length > 0) {
+            await db.pendingMutations.bulkDelete(rest.map((queued) => queued.id));
+          }
+        });
+        notifyDrainer();
+      } else {
+        await enqueue('patch_note', noteId, apiPayload, currentVersion);
+      }
+      return { current, currentVersion, before };
     });
-    await enqueue('patch_note', noteId, apiPayload, currentVersion);
+
     // TipTap maintains its own character-level content history. Keep the
     // shared queue history focused on tree/title/tag changes so autosave does
     // not create one global history entry per keystroke.
@@ -144,6 +185,11 @@ export function queuedPatchNote(
       delete historyAfter.content;
       recordNoteChange({ noteId, before: historyBefore, after: historyAfter });
     }
+
+    // Keep variables explicit for the queue's optimistic-lock comments and
+    // to make this operation's result easy to inspect in a debugger.
+    void current;
+    void currentVersion;
   });
   const tracked = operation.finally(() => {
     if (patchChains.get(noteId) === tracked) patchChains.delete(noteId);
@@ -437,6 +483,85 @@ export async function applyServerNote(
  * (r2Key, syncStatus) but does NOT download the blob — that happens
  * lazily in ResizableImage.tsx when the image is actually rendered.
  */
+/**
+ * Apply a permanent server deletion. Dirty local rows are preserved and
+ * surfaced as an explicit remote-missing mutation instead of being erased.
+ */
+export async function applyServerTombstone(tombstone: TombstoneDTO): Promise<boolean> {
+  if (tombstone.resourceType === 'attachment') {
+    const local = await db.attachments.get(tombstone.resourceId);
+    if (local?.syncStatus === 'local_only') {
+      const existing = await db.pendingMutations
+        .where('resourceId')
+        .equals(tombstone.resourceId)
+        .toArray();
+      if (!existing.some((mutation) => mutation.status === 'remote_missing')) {
+        await db.pendingMutations.add({
+          id: uuidv4(),
+          type: 'upload_attachment',
+          resourceId: tombstone.resourceId,
+          payload: JSON.stringify({ noteId: local.noteId, mime: local.mime, name: local.name }),
+          baseVersion: null,
+          createdAt: Date.now(),
+          attempts: 0,
+          lastError: 'Remote attachment was permanently deleted',
+          status: 'remote_missing',
+        });
+      }
+      return false;
+    }
+    await db.transaction('rw', db.attachments, db.pendingMutations, async () => {
+      await db.attachments.delete(tombstone.resourceId);
+      await db.pendingMutations.where('resourceId').equals(tombstone.resourceId).delete();
+    });
+    return true;
+  }
+
+  const local = await db.notes.get(tombstone.resourceId);
+  if (local?.dirty) {
+    const existing = await db.pendingMutations
+      .where('resourceId')
+      .equals(tombstone.resourceId)
+      .toArray();
+    if (!existing.some((mutation) => mutation.status === 'remote_missing')) {
+      await db.pendingMutations.add({
+        id: uuidv4(),
+        type: 'patch_note',
+        resourceId: tombstone.resourceId,
+        payload: JSON.stringify({
+          title: local.title,
+          content: local.content,
+          isExpanded: local.isExpanded,
+          orderIdx: local.order,
+          parentId: local.parentId,
+          tags: local.tags ?? [],
+        }),
+        baseVersion: local.version ?? null,
+        createdAt: Date.now(),
+        attempts: 0,
+        lastError: 'Remote note was permanently deleted',
+        status: 'remote_missing',
+      });
+    }
+    return false;
+  }
+
+  const attachments = await db.attachments
+    .where('noteId')
+    .equals(tombstone.resourceId)
+    .toArray();
+  await db.transaction('rw', db.notes, db.attachments, db.pendingMutations, async () => {
+    await db.pendingMutations.where('resourceId').equals(tombstone.resourceId).delete();
+    if (attachments.length > 0) {
+      const attachmentIds = attachments.map((attachment) => attachment.id);
+      await db.pendingMutations.where('resourceId').anyOf(attachmentIds).delete();
+      await db.attachments.bulkDelete(attachmentIds);
+    }
+    await db.notes.delete(tombstone.resourceId);
+  });
+  return true;
+}
+
 export async function applyServerAttachment(
   serverAtt: {
     id: string;

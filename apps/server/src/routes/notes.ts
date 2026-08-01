@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { db, pgClient } from '../db/index.js';
-import { notes } from '../db/schema.js';
-import { eq, inArray, sql } from 'drizzle-orm';
+import { notes, attachments, tombstones } from '../db/schema.js';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { encrypt, decrypt } from '../crypto.js';
 import { randomUUID } from 'node:crypto';
 import { htmlToPlaintext } from '../html-to-text.js';
@@ -128,53 +128,58 @@ notesRoutes.post('/', async (c) => {
   // the insert and the onConflictDoUpdate branches.
   const tsvectorSql = sql`to_tsvector('simple', ${title} || ' ' || ${htmlToPlaintext(body.content ?? '')})` as unknown as string;
 
-  const [row] = await db
-    .insert(notes)
-    .values({
-      id,
-      parentId,
-      title,
-      contentCt,
-      contentNonce,
-      isFolder,
-      isExpanded: true,
-      orderIdx: body.orderIdx ?? now.getTime(),
-      tags: body.tags ?? [],
-      createdAt: now,
-      updatedAt: now,
-      version: 1,
-      // Phase 6: tsvector for full text search. Server computes
-      // `to_tsvector('simple', title || ' ' || plaintext(content))`
-      // so the FTS GIN index is up to date immediately. The `as
-      // unknown as string` cast narrows Drizzle's column type (which
-      // declares `data: string`) so a raw SQL expression is
-      // accepted — drizzle's runtime recognises `SQL` instances as
-      // side-effect-free passthroughs and postgres-js serializes
-      // them as parameterized expressions, so there's no injection
-      // risk in the cast.
-      contentTsvector: tsvectorSql,
-    })
-    // Idempotent upsert (Phase 8 — onboarding re-entrancy). If the
-    // same id is re-posted after a network timeout mid-onboarding,
-    // we re-PATCH the row instead of 500-ing on PK violation.
-    // Subsequent sync pulls on other devices still see the latest
-    // content because we bump `version` by 1 on conflict.
-    .onConflictDoUpdate({
-      target: notes.id,
-      set: {
+  // Keep recreate/upsert and tombstone removal in one transaction. Without
+  // this, a note recreated with the same stable ID could be deleted again by
+  // the next delta pull because its old tombstone would still be present.
+  const row = await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(notes)
+      .values({
+        id,
         parentId,
         title,
         contentCt,
         contentNonce,
         isFolder,
+        isExpanded: true,
         orderIdx: body.orderIdx ?? now.getTime(),
         tags: body.tags ?? [],
+        createdAt: now,
         updatedAt: now,
-        version: sql`${notes.version} + 1`,
+        version: 1,
+        // Phase 6: tsvector for full text search. Server computes
+        // `to_tsvector('simple', title || ' ' || plaintext(content))`
+        // so the FTS GIN index is up to date immediately.
         contentTsvector: tsvectorSql,
-      },
-    })
-    .returning();
+      })
+      // Idempotent upsert (Phase 8 — onboarding re-entrancy).
+      .onConflictDoUpdate({
+        target: notes.id,
+        set: {
+          parentId,
+          title,
+          contentCt,
+          contentNonce,
+          isFolder,
+          orderIdx: body.orderIdx ?? now.getTime(),
+          tags: body.tags ?? [],
+          isDeleted: false,
+          deletedAt: null,
+          updatedAt: now,
+          version: sql`${notes.version} + 1`,
+          contentTsvector: tsvectorSql,
+        },
+      })
+      .returning();
+
+    await tx
+      .delete(tombstones)
+      .where(and(
+        eq(tombstones.resourceType, 'note'),
+        eq(tombstones.resourceId, id),
+      ));
+    return created;
+  });
 
   return c.json(rowToDTO(row, body.content ?? ''), 201);
 });
@@ -328,9 +333,27 @@ notesRoutes.post('/:id/permanent', async (c) => {
   }
 
   const ids = await collectDescendantIds(id);
+  const attachmentRows = await db
+    .select({ id: attachments.id })
+    .from(attachments)
+    .where(inArray(attachments.noteId, ids));
 
-  // Hard-delete (cascades to attachments via FK).
-  await db.delete(notes).where(inArray(notes.id, ids));
+  // Preserve deletion facts and remove the source rows atomically. The
+  // unique resource index makes retries idempotent; a failed transaction
+  // cannot leave clients with tombstones for data that still exists.
+  const deletionRows = [
+    ...ids.map((resourceId) => ({ resourceType: 'note', resourceId })),
+    ...attachmentRows.map(({ id: resourceId }) => ({ resourceType: 'attachment', resourceId })),
+  ];
+  await db.transaction(async (tx) => {
+    if (deletionRows.length > 0) {
+      await tx.insert(tombstones).values(deletionRows).onConflictDoUpdate({
+        target: [tombstones.resourceType, tombstones.resourceId],
+        set: { deletedAt: new Date() },
+      });
+    }
+    await tx.delete(notes).where(inArray(notes.id, ids));
+  });
 
   return c.json({ ok: true, deleted: ids.length });
 });

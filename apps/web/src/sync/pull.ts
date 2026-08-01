@@ -1,64 +1,65 @@
 /**
  * Delta-sync pull — fetch server changes and apply them to the local
- * IndexedDB cache.
- *
- * Called by the sync engine on app mount, window focus (debounced),
- * `navigator.onLine` event, and a 60-second periodic poll.
- *
- * The pull is NON-DESTRUCTIVE to local edits: notes marked `dirty=true`
- * are never overwritten by server data. The pending mutation queue
- * will push those local edits to the server, and a subsequent pull
- * will then see the updated version.
+ * IndexedDB cache. Pages share a fixed server boundary, so writes racing
+ * the first request are picked up on the next pull rather than skipped.
  */
 
 import { api } from '../api/client';
 import { db } from '../db/db';
-import { applyServerNote, applyServerAttachment, getSyncState, setSyncState, shouldSync } from './queue';
+import {
+  applyServerNote,
+  applyServerAttachment,
+  applyServerTombstone,
+  getSyncState,
+  setSyncState,
+  shouldSync,
+} from './queue';
+import type { SyncCursor } from '@mindleaf/shared';
 
-/**
- * Pull delta from the server and apply to local cache.
- *
- * @returns The number of notes + attachments that were updated.
- */
 export async function pullDelta(): Promise<{ notes: number; attachments: number }> {
   if (!shouldSync()) return { notes: 0, attachments: 0 };
 
   const lastSyncedAtStr = await getSyncState('lastSyncedAt');
   const lastSyncedAt = lastSyncedAtStr ? parseInt(lastSyncedAtStr, 10) : 0;
-
-  let snapshot;
-  try {
-    snapshot = await api.getSyncSnapshot(lastSyncedAt);
-  } catch (err) {
-    // Network error / 5xx — silently skip. The periodic poll will retry.
-    console.warn('[sync] pull failed:', err);
-    return { notes: 0, attachments: 0 };
-  }
-
+  let cursor: SyncCursor | undefined;
   let notesApplied = 0;
   let attachmentsApplied = 0;
 
-  // Apply notes
-  for (const serverNote of snapshot.notes) {
-    const local = await db.notes.get(serverNote.id);
-    const wasDirty = local?.dirty ?? false;
-
-    await applyServerNote(serverNote, snapshot.serverNow);
-
-    // Count only notes that actually changed something.
-    if (!local || (!wasDirty && serverNote.version > (local.version ?? 0))) {
-      notesApplied++;
-    }
+  try {
+    do {
+      const snapshot = await api.getSyncSnapshot(lastSyncedAt, cursor);
+      const tombstones = snapshot.tombstones ?? [];
+      const hasMore = snapshot.hasMore === true;
+      for (const tombstone of tombstones) {
+        const applied = await applyServerTombstone(tombstone);
+        if (!applied) {
+          // Keep the persisted cursor unchanged until the user resolves the
+          // local-vs-remote deletion. Replaying this page is safe because all
+          // apply operations are idempotent/version guarded.
+          throw new Error(`Sync blocked by unresolved tombstone ${tombstone.resourceId}`);
+        }
+      }
+      for (const serverNote of snapshot.notes) {
+        const local = await db.notes.get(serverNote.id);
+        const wasDirty = local?.dirty ?? false;
+        await applyServerNote(serverNote, snapshot.serverNow);
+        if (!local || (!wasDirty && serverNote.version > (local.version ?? 0))) notesApplied++;
+      }
+      for (const serverAtt of snapshot.attachments) {
+        await applyServerAttachment(serverAtt);
+        attachmentsApplied++;
+      }
+      cursor = hasMore ? snapshot.nextCursor ?? undefined : undefined;
+      if (!hasMore) {
+        await setSyncState('lastSyncedAt', String(snapshot.serverNow));
+      }
+    } while (cursor);
+  } catch (err) {
+    // Do not advance the persisted cursor when a page fails. The next pull
+    // safely replays the already-applied page because apply operations are
+    // version/idempotency guarded.
+    console.warn('[sync] pull failed:', err);
   }
-
-  // Apply attachments
-  for (const serverAtt of snapshot.attachments) {
-    await applyServerAttachment(serverAtt);
-    attachmentsApplied++;
-  }
-
-  // Update lastSyncedAt
-  await setSyncState('lastSyncedAt', String(snapshot.serverNow));
 
   return { notes: notesApplied, attachments: attachmentsApplied };
 }

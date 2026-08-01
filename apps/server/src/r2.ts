@@ -2,6 +2,7 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'node:crypto';
@@ -88,6 +89,17 @@ export async function presignGet(r2Key: string): Promise<string> {
 export async function getR2Object(r2Key: string) {
   if (!s3Client) throw new Error('R2 client not configured');
   const command = new GetObjectCommand({ Bucket: R2_BUCKET, Key: r2Key });
+  return s3Client.send(command);
+}
+
+/**
+ * Verify that a browser's direct upload reached object storage and return
+ * its stored byte count. The completion endpoint uses this instead of
+ * trusting a client-provided success signal.
+ */
+export async function headR2Object(r2Key: string) {
+  if (!s3Client) throw new Error('R2 client not configured');
+  const command = new HeadObjectCommand({ Bucket: R2_BUCKET, Key: r2Key });
   return s3Client.send(command);
 }
 

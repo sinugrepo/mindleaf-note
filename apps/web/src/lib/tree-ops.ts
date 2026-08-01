@@ -35,7 +35,14 @@ export function validateDropTarget(
   // Walk up from target; if we ever pass the dragged note, the target is a descendant of dragged.
   let currentParent: string | null = target.parentId;
   const byId = new Map(allNotes.map((n) => [n.id, n]));
+  const visitedParents = new Set<string>();
   while (currentParent) {
+    // Malformed imported data can contain a parent cycle. Treat it as an
+    // invalid tree rather than looping forever during a drag validation.
+    if (visitedParents.has(currentParent)) {
+      return { valid: false, reason: 'descendant' };
+    }
+    visitedParents.add(currentParent);
     if (currentParent === draggedId) {
       return { valid: false, reason: 'descendant' };
     }
@@ -189,15 +196,27 @@ export function collectDescendants(
   allNotes: Note[],
   rootId: string,
 ): string[] {
+  const childrenByParent = new Map<string, Note[]>();
+  for (const note of allNotes) {
+    if (!note.parentId) continue;
+    const children = childrenByParent.get(note.parentId);
+    if (children) children.push(note);
+    else childrenByParent.set(note.parentId, [note]);
+  }
+
   const out: string[] = [];
-  const walk = (parentId: string) => {
-    const kids = allNotes.filter((n) => n.parentId === parentId);
-    for (const kid of kids) {
-      out.push(kid.id);
-      walk(kid.id);
+  const visited = new Set<string>([rootId]);
+  const stack = [...(childrenByParent.get(rootId) ?? [])].reverse();
+  while (stack.length > 0) {
+    const child = stack.pop()!;
+    if (visited.has(child.id)) continue;
+    visited.add(child.id);
+    out.push(child.id);
+    const children = childrenByParent.get(child.id);
+    if (children) {
+      for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
     }
-  };
-  walk(rootId);
+  }
   return out;
 }
 
@@ -279,23 +298,30 @@ export function flattenTree(
   }
 
   const out: FlatTreeItem[] = [];
+  const visited = new Set<string>();
+  const stack: Array<{ note: Note; depth: number }> = [];
+  const roots = byParent.get(null) ?? [];
+  for (let i = roots.length - 1; i >= 0; i--) {
+    stack.push({ note: roots[i], depth: 0 });
+  }
 
-  const dfs = (parentId: string | null, depth: number): void => {
-    const kids = byParent.get(parentId);
-    if (!kids) return;
-    for (const kid of kids) {
-      const grands = byParent.get(kid.id);
-      const hasChildren = !!grands && grands.length > 0;
-      const isOpened = !!kid.isFolder && !!kid.isExpanded;
-      out.push({ note: kid, depth, hasChildren, isOpened });
-      // Stop the descent at collapsed folders so toggling close truly
-      // removes the subtree from the rendered DOM, not just hides it.
-      if (isOpened) {
-        dfs(kid.id, depth + 1);
+  // Iterative DFS avoids call-stack overflow for deeply nested but valid
+  // imported trees, while `visited` still prevents malformed cycles.
+  while (stack.length > 0) {
+    const { note: kid, depth } = stack.pop()!;
+    if (visited.has(kid.id)) continue;
+    visited.add(kid.id);
+    const grands = byParent.get(kid.id);
+    const hasChildren = !!grands && grands.length > 0;
+    const isOpened = !!kid.isFolder && !!kid.isExpanded;
+    out.push({ note: kid, depth, hasChildren, isOpened });
+    if (isOpened && grands) {
+      for (let i = grands.length - 1; i >= 0; i--) {
+        stack.push({ note: grands[i], depth: depth + 1 });
       }
     }
-  };
-
-  dfs(null, 0);
+  }
+  // Orphaned rows are not rendered as roots, preserving the existing tree
+  // contract; all reachable rows are rendered without recursive overflow.
   return out;
 }
