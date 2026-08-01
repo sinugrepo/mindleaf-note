@@ -125,26 +125,26 @@ export function TreeView({ disableVirtualization: dvProp }: TreeViewProps = {}) 
   // their stored `order`, which preserves drag/move-up/move-down
   // intent. Done in a useMemo so the comparator runs once per
   // notes / mode change, not once per row.
+  const sortedRoots = useMemo(
+    () => sortRootNotes(notes.filter((n) => !n.parentId), sortMode, sortDirection),
+    [notes, sortMode, sortDirection],
+  );
+
   const sortedNotes = useMemo(() => {
-    const roots = notes.filter((n) => !n.parentId);
-    const sortedRoots = sortRootNotes(roots, sortMode, sortDirection);
-    const rootIds = new Set(sortedRoots.map((n) => n.id));
-    // Reassemble: sorted roots first, then non-roots (children of
-    // whatever root owns them — `flattenTree` will do its own
-    // child grouping).
-    const rest = notes.filter((n) => n.parentId !== null);
-    return [
-      ...sortedRoots,
-      ...rest.filter((n) => rootIds.has(n.parentId!) || n.parentId !== null),
-    ];
-  }, [notes, sortMode, sortDirection]);
+    // Reassemble roots in the selected sort order and leave descendants
+    // available for flattenTree to group beneath their parent.
+    return [...sortedRoots, ...notes.filter((n) => n.parentId !== null)];
+  }, [notes, sortedRoots]);
 
   // O(N) flatten once per notes change. The result defines both display
   // order AND which rows are currently visible (collapsed subtrees don't
   // even appear in the flat list — the DFS prunes them). Pass the
   // already-sorted notes so the DFS preserves the root ordering
   // applied above.
-  const flatNotes = useMemo(() => flattenTree(sortedNotes), [sortedNotes]);
+  const flatNotes = useMemo(
+    () => flattenTree(sortedNotes, sortedRoots.map((note) => note.id)),
+    [sortedNotes, sortedRoots],
+  );
 
   // O(N log N) batch pre-computation of move-up / move-down support for
   // every visible row. Each TreeRow can then answer its own move

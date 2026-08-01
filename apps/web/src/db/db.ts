@@ -38,8 +38,8 @@ export interface PendingMutation {
   attempts: number;
   /** Last error message (for display in the Sync Status modal). */
   lastError: string | null;
-  /** Current lifecycle status. */
-  status: 'pending' | 'in_progress' | 'failed' | 'conflicted';
+  /** Current lifecycle status. `remote_missing` is an explicit 404 recovery state; `remote_recovering` is a crash-safe temporary quarantine. */
+  status: 'pending' | 'in_progress' | 'failed' | 'conflicted' | 'remote_missing' | 'remote_recovering';
 }
 
 /**
@@ -196,6 +196,72 @@ export class TreeNoteDB extends Dexie {
 }
 
 export const db = new TreeNoteDB();
+
+/**
+ * Recover from a tab/browser crash during remote-missing recreation. A
+ * recovery record is never pushed by the drainer, so it must be returned to
+ * the actionable remote_missing state on the next app start.
+ */
+export async function resetStaleRemoteRecoveries(): Promise<number> {
+  const recovering = await db.pendingMutations
+    .where('status')
+    .equals('remote_recovering')
+    .toArray();
+  if (recovering.length === 0) return 0;
+
+  let changed = 0;
+  await db.transaction('rw', db.pendingMutations, db.attachments, async () => {
+    for (const record of recovering) {
+      // If recreate reached queuedImportNotes before the crash, a fresh
+      // create/upload mutation exists for the same resource. Remove the old
+      // quarantine record instead of presenting duplicate recovery actions.
+      const replacementType = record.type === 'upload_attachment'
+        ? 'upload_attachment'
+        : 'create_note';
+      const replacement = await db.pendingMutations
+        .where('resourceId')
+        .equals(record.resourceId)
+        .filter((candidate) =>
+          candidate.id !== record.id &&
+          ['pending', 'in_progress', 'failed'].includes(candidate.status) &&
+          candidate.type === replacementType,
+        )
+        .first();
+      if (replacement) {
+        await db.pendingMutations.delete(record.id);
+
+        // A recreated note also creates fresh upload mutations. Remove only
+        // the old attachment records left by the interrupted recovery; keep
+        // the replacement uploads (and their local attachment rows) intact.
+        if (record.type === 'patch_note') {
+          const attachments = await db.attachments
+            .where('noteId')
+            .equals(record.resourceId)
+            .toArray();
+          const attachmentIds = attachments.map((attachment) => attachment.id);
+          if (attachmentIds.length > 0) {
+            const staleUploads = await db.pendingMutations
+              .where('resourceId')
+              .anyOf(attachmentIds)
+              .filter((candidate) =>
+                candidate.type === 'upload_attachment' &&
+                candidate.status === 'remote_missing',
+              )
+              .toArray();
+            await db.pendingMutations.bulkDelete(staleUploads.map((upload) => upload.id));
+          }
+        }
+      } else {
+        await db.pendingMutations.update(record.id, {
+          status: 'remote_missing',
+          lastError: 'Recovery interrupted; choose recreate or delete local',
+        });
+      }
+      changed++;
+    }
+  });
+  return changed;
+}
 
 /**
  * Walk `content`, decode every `<img src="data:image/...?...">` and append

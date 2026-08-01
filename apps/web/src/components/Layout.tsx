@@ -1,7 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { Sidebar } from './Sidebar';
-import { Editor } from './Editor';
+
+const Editor = React.lazy(() =>
+  import('./Editor').then(({ Editor: EditorComponent }) => ({ default: EditorComponent })),
+);
 import { EditorEmptyState } from './EditorEmptyState';
 import { cn } from '../lib/utils';
 import { useMediaQuery } from '../hooks/useMediaQuery';
@@ -186,7 +189,15 @@ export function Layout({ onLogout }: { onLogout?: () => Promise<void> }) {
             itself is a human/architectural contract — see the comment at
             the top of Editor.tsx for the full reasoning. */}
         {activeNoteId ? (
-          <Editor key={activeNoteId} noteId={activeNoteId} />
+          <Suspense
+            fallback={
+              <div className="flex-1 flex items-center justify-center text-sm text-zinc-400 dark:text-zinc-500">
+                Loading editor...
+              </div>
+            }
+          >
+            <Editor key={activeNoteId} noteId={activeNoteId} />
+          </Suspense>
         ) : (
           <EditorEmptyState />
         )}

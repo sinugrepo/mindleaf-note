@@ -494,3 +494,4 @@ export async function setSyncState(key: string, value: string): Promise<void> {
 // here, queue.ts → drainer.ts → queue.ts would be circular. By importing
 // it from api/client.ts, the dependency graph is acyclic.
 export { shouldSync } from '../api/client';
+export { notifyDrainer } from './drainer';
