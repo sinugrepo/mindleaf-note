@@ -17,6 +17,14 @@ export const syncRoutes = new Hono<AppEnv>();
 
 const DEFAULT_PAGE_SIZE = 250;
 const MAX_PAGE_SIZE = 500;
+const DEFAULT_TOMBSTONE_RETENTION_DAYS = 90;
+
+function getTombstoneRetentionDays(): number {
+  const configured = Number.parseInt(process.env.TOMBSTONE_RETENTION_DAYS ?? '', 10);
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_TOMBSTONE_RETENTION_DAYS;
+}
 
 function parseLimit(raw: string | undefined): number {
   const parsed = raw ? Number.parseInt(raw, 10) : DEFAULT_PAGE_SIZE;
@@ -75,6 +83,22 @@ syncRoutes.get('/snapshot', async (c) => {
   const decoded = decodeCursor(c.req.query('cursor'));
   if (c.req.query('cursor') && !decoded) {
     return c.json({ error: 'Invalid sync cursor' }, 400);
+  }
+
+  const retentionDays = getTombstoneRetentionDays();
+  const retentionCutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const cursorTimeMs = decoded?.boundary ?? sinceMs;
+  // A cursor older than the tombstone journal cannot safely reconcile hard
+  // deletes: those tombstones may already have been purged. Stop with an
+  // explicit recovery response instead of silently advancing the cursor and
+  // leaving stale local notes behind. A zero cursor is a new-device/full
+  // bootstrap and is intentionally allowed.
+  if (cursorTimeMs > 0 && cursorTimeMs < retentionCutoffMs) {
+    return c.json({
+      error: 'sync_cursor_expired',
+      recoveryRequired: true,
+      retentionDays,
+    }, 410);
   }
 
   const cursor: SyncCursor = decoded ?? {

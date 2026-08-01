@@ -13,11 +13,12 @@ import {
   getSyncState,
   setSyncState,
   shouldSync,
+  isSyncRecoveryRequired,
 } from './queue';
 import type { SyncCursor } from '@mindleaf/shared';
 
 export async function pullDelta(): Promise<{ notes: number; attachments: number }> {
-  if (!shouldSync()) return { notes: 0, attachments: 0 };
+  if (!shouldSync() || await isSyncRecoveryRequired()) return { notes: 0, attachments: 0 };
 
   const lastSyncedAtStr = await getSyncState('lastSyncedAt');
   const lastSyncedAt = lastSyncedAtStr ? parseInt(lastSyncedAtStr, 10) : 0;
@@ -52,13 +53,23 @@ export async function pullDelta(): Promise<{ notes: number; attachments: number 
       cursor = hasMore ? snapshot.nextCursor ?? undefined : undefined;
       if (!hasMore) {
         await setSyncState('lastSyncedAt', String(snapshot.serverNow));
+        await setSyncState('syncRecoveryRequired', 'false');
       }
     } while (cursor);
   } catch (err) {
-    // Do not advance the persisted cursor when a page fails. The next pull
-    // safely replays the already-applied page because apply operations are
-    // version/idempotency guarded.
-    console.warn('[sync] pull failed:', err);
+    const status = (err as Error & { status?: number }).status;
+    if (status === 410) {
+      // The server no longer retains tombstones old enough to reconcile this
+      // device. Persist an explicit recovery state; never advance the cursor
+      // or silently delete local data.
+      await setSyncState('syncRecoveryRequired', 'true');
+      console.warn('[sync] cursor expired; full recovery is required');
+    } else {
+      // Do not advance the persisted cursor when a page fails. The next pull
+      // safely replays the already-applied page because apply operations are
+      // version/idempotency guarded.
+      console.warn('[sync] pull failed:', err);
+    }
   }
 
   return { notes: notesApplied, attachments: attachmentsApplied };

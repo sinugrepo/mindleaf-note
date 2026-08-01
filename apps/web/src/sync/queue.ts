@@ -614,6 +614,24 @@ export async function setSyncState(key: string, value: string): Promise<void> {
   await db.syncState.put({ key, value });
 }
 
+/**
+ * Returns true when the server rejected the cursor because its tombstone
+ * retention window has elapsed. Pulling again with the same cursor cannot
+ * make progress, so the sync engine must wait for an explicit full-recovery
+ * workflow instead of retrying forever.
+ */
+export async function isSyncRecoveryRequired(): Promise<boolean> {
+  return (await getSyncState('syncRecoveryRequired')) === 'true';
+}
+
+/**
+ * Clear the recovery gate only after an explicit full snapshot/restore has
+ * completed successfully. This is intentionally not called automatically.
+ */
+export async function clearSyncRecoveryRequired(): Promise<void> {
+  await setSyncState('syncRecoveryRequired', 'false');
+}
+
 // `shouldSync` is re-exported from api/client.ts to avoid a circular
 // import: drainer.ts imports shouldSync from here, and if we defined it
 // here, queue.ts → drainer.ts → queue.ts would be circular. By importing

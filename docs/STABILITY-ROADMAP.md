@@ -35,10 +35,11 @@ This checklist tracks work needed to keep Mindleaf reliable as the local cache, 
 - [x] Add PostgreSQL indexes for sync timestamp columns (EXPLAIN verification remains a deployment task).
 - [x] Replace full-table count queries with SQL aggregates.
 - [x] Keep tree traversal O(N) using reusable parent/ID maps and guard malformed cycles.
-- [ ] Bound local search result rendering and move large search indexes to a worker or server FTS when dataset size requires it.
-- [ ] Replace full-content backlink scans with an indexed note-link table.
+- [x] Bound local search result rendering to 100 results and make search breadcrumbs O(1) per parent lookup; move the full-text index to a worker/server FTS when dataset size requires it.
+- [ ] Replace full-content backlink scans with an indexed note-link table; current scan streams IndexedDB rows to reduce peak memory.
 - [ ] Avoid loading note bodies when only tree/sidebar metadata is needed.
 - [ ] Add scale fixtures for 1,000, 10,000, and 50,000 notes and measure IndexedDB query, flatten, search, and render timings.
+- [x] Stream tag catalogue/backlink/search candidate scans and cap rendered search results to protect peak memory.
 - [ ] Add trash/tag/bulk-action pagination or bounded queries.
 
 **Exit checklist:** large fixtures remain responsive; no user-facing operation loads all note bodies unnecessarily; query plans use the intended indexes.
@@ -46,6 +47,7 @@ This checklist tracks work needed to keep Mindleaf reliable as the local cache, 
 ## Phase 3 — attachments, backup, and operations (P1/P2)
 
 - [x] Add attachment upload states and idempotent presign/complete reconciliation; completion now verifies the R2 object.
+- [x] Detect an expired sync cursor and persist a visible `Recovery required` gate without silently deleting local data.
 - [ ] Add explicit full-resync/recovery UX when a device cursor is older than the 90-day tombstone retention window.
 - [ ] Reconcile metadata rows and R2 objects periodically; clean orphan objects as well as local rows.
 - [ ] Convert backup export/import to bounded batches or a streaming format; support resume/checkpoints for large imports. Current implementation has 100 MB and 50,000-item guardrails.

@@ -10,16 +10,23 @@ import { isActiveNote } from '../lib/notes';
 import { queuedPatchNote } from '../sync/queue';
 import { htmlToSnippet } from '../lib/sanitize';
 
+const MAX_RENDERED_SEARCH_RESULTS = 100;
+
 export function SearchResults() {
   const { searchQuery, setActiveNoteId } = useStore();
   // Only ACTIVE notes are searchable. Trash items intentionally
   // excluded so users can't accidentally revive-and-jump-to a deleted
   // note by typing its old title. Filter at the query boundary so the
   // Fuse index never contains trashed items.
-  const notes = useLiveQuery(
-    async () => (await db.notes.toArray()).filter(isActiveNote),
-    [],
-  );
+  const notes = useLiveQuery(async () => {
+    const active: Note[] = [];
+    // Keep the active-note filter streaming so we do not briefly hold both
+    // the complete table and a second filtered array in memory.
+    await db.notes.each((note) => {
+      if (isActiveNote(note)) active.push(note);
+    });
+    return active;
+  }, []);
 
   const fuse = useMemo(() => {
     if (!notes) return null;
@@ -34,19 +41,22 @@ export function SearchResults() {
 
   if (!notes || !fuse) return <div className="p-4 text-xs text-zinc-500">Preparing search...</div>;
 
-  const results = fuse.search(searchQuery);
+  const results = fuse.search(searchQuery, { limit: MAX_RENDERED_SEARCH_RESULTS });
+  const notesById = useMemo(
+    () => new Map((notes ?? []).map((note) => [note.id, note])),
+    [notes],
+  );
 
   const getBreadcrumbs = (note: Note) => {
     let current = note;
-    const path = [];
-    while (current.parentId) {
-      const parent = notes.find(n => n.id === current.parentId);
-      if (parent) {
-        path.unshift(parent.title || 'Untitled');
-        current = parent;
-      } else {
-        break;
-      }
+    const path: string[] = [];
+    const visited = new Set<string>();
+    while (current.parentId && !visited.has(current.id)) {
+      visited.add(current.id);
+      const parent = notesById.get(current.parentId);
+      if (!parent) break;
+      path.unshift(parent.title || 'Untitled');
+      current = parent;
     }
     return path;
   };
@@ -76,7 +86,7 @@ export function SearchResults() {
   return (
     <div className="flex flex-col">
       <div className="px-3 py-2 text-xs font-semibold text-zinc-500 uppercase tracking-wider sticky top-0 bg-transparent backdrop-blur-3xl border-b border-white/60 dark:border-white/5 z-10">
-        Search Results ({results.length})
+        Search Results ({results.length}{results.length === MAX_RENDERED_SEARCH_RESULTS ? '+' : ''})
       </div>
       
       <div className="flex flex-col p-2 gap-1 pb-4">

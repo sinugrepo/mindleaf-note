@@ -24,7 +24,15 @@ import { extractBacklinkedNoteIds, WIKILINK_ID_ATTR } from '../lib/wikilink';
  * component's prop surface.
  */
 export function BacklinksPanel({ activeNoteId }: { activeNoteId: string }) {
-  const allNotes = useLiveQuery(() => db.notes.toArray(), []);
+  const allNotes = useLiveQuery(async () => {
+    const out: Note[] = [];
+    // Iterate through IndexedDB without materializing a second full-table
+    // array. Only active backlink candidates are retained for rendering.
+    await db.notes.each((note) => {
+      if (note.id !== activeNoteId && note.deletedAt == null) out.push(note);
+    });
+    return out;
+  }, [activeNoteId]);
 
   // Build the list of "notes that reference me". Pure-JS scan of
   // every active note's content; tested by extractBacklinkedNoteIds
@@ -33,10 +41,6 @@ export function BacklinksPanel({ activeNoteId }: { activeNoteId: string }) {
     if (!allNotes) return [];
     const out: Note[] = [];
     for (const note of allNotes) {
-      if (note.id === activeNoteId) continue;
-      // Skip trashed notes — they shouldn't be navigable from the
-      // editor anyway.
-      if (note.deletedAt != null) continue;
       if (extractBacklinkedNoteIds(note.content).includes(activeNoteId)) {
         out.push(note);
       }
