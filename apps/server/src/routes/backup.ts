@@ -8,13 +8,13 @@ import {
   s3Client,
   presignPut,
   generateR2Key,
+  getR2Object,
 } from '../r2.js';
 import { rateLimit } from '../middleware/ratelimit.js';
 import {
   bodySizeLimit,
   BACKUP_IMPORT_BYTES,
 } from '../middleware/body-limit.js';
-import { GetObjectCommand } from '@aws-sdk/client-s3';
 import type {
   BackupPayloadV2,
   BackupAttachmentV2,
@@ -165,12 +165,7 @@ backupRoutes.post(
           };
         }
         try {
-          const out = await s3.send(
-            new GetObjectCommand({
-              Bucket: process.env.R2_BUCKET!,
-              Key: a.r2Key,
-            }),
-          );
+          const out = await getR2Object(a.r2Key);
           // Stream the body into one Buffer. `out.Body` is a Node
           // Readable; collect into a buffer for base64.
           const chunks: Buffer[] = [];

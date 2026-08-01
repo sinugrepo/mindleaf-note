@@ -9,7 +9,6 @@
     "moduleDetection": "force",
     "esModuleInterop": true,
     "strict": true,
-    "noEmit": true,
     "outDir": "./dist",
     "rootDir": "./src",
     "baseUrl": "."

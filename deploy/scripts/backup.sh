@@ -40,6 +40,7 @@ PG_DB="${PG_DB:-mindleaf}"
 PG_HOST="${PG_HOST:-localhost}"
 PG_PORT="${PG_PORT:-5432}"
 PG_USER="${PG_USER:-mindleaf}"
+PGPASSFILE="${PGPASSFILE:-/opt/mindleaf/.pgpass}"
 
 RCLONE_REMOTE="${RCLONE_REMOTE:-r2:mindleaf-prod-backups/db}"
 RCLONE_CONFIG="${RCLONE_CONFIG:-/opt/mindleaf/.config/rclone/rclone.conf}"
@@ -90,10 +91,10 @@ dump_database() {
     local out_path="$1"
     log "pg_dump -Fc -d $PG_DB → $out_path (start)"
 
-    # Avoid embedding password in command line. Use ~/.pgpass which
-    # bootstrap.sh provisions (chmod 600, format
-    # `hostname:port:database:username:password`).
-    if ! pg_dump \
+    # Avoid embedding a password in the command line. bootstrap.sh stores
+    # the credentials at /opt/mindleaf/.pgpass, so pass the path explicitly;
+    # cron's HOME is not a stable contract for locating .pgpass.
+    if ! PGPASSFILE="$PGPASSFILE" pg_dump \
         --host="$PG_HOST" \
         --port="$PG_PORT" \
         --username="$PG_USER" \
@@ -123,7 +124,8 @@ push_to_r2() {
     dest_name="$(date -u '+%Y-%m-%d')-$(basename "$src")"
 
     log "rclone copyto $src → $RCLONE_REMOTE/$dest_name (start)"
-    if ! RCLONE_CONFIG="$RCLONE_CONFIG" rclone copyto \
+    local rclone_status=0
+    RCLONE_CONFIG="$RCLONE_CONFIG" rclone copyto \
         --retries 3 \
         --low-level-retries 5 \
         --s3-upload-cutoff 100M \
@@ -131,15 +133,14 @@ push_to_r2() {
         --stats 30s \
         --stats-one-line \
         --log-level INFO \
-        "$src" "$RCLONE_REMOTE/$dest_name" 2>&1 | systemd-cat -t "$LOG_TAG" 2>/dev/null || true; then
-        # rclone prints progress to stdout but exits non-zero only on
-        # hard failures; the pipe to systemd-cat means we can't see
-        # rclone's actual exit through `set -e`. Re-check the local
-        # copy: rclone copyto is atomic (write-on-temp, rename on success).
-        if ! RCLONE_CONFIG="$RCLONE_CONFIG" rclone lsjson "$RCLONE_REMOTE/$dest_name" >/dev/null 2>&1; then
-            err "rclone copy verification failed — $dest_name NOT in $RCLONE_REMOTE"
-            exit 2
-        fi
+        "$src" "$RCLONE_REMOTE/$dest_name" 2>&1 \
+        | systemd-cat -t "$LOG_TAG" 2>/dev/null || rclone_status=$?
+
+    # Verify the object independently because the logging pipe otherwise
+    # masks rclone's exit status.
+    if [[ $rclone_status -ne 0 ]] || ! RCLONE_CONFIG="$RCLONE_CONFIG" rclone lsjson "$RCLONE_REMOTE/$dest_name" >/dev/null 2>&1; then
+        err "rclone copy verification failed — $dest_name NOT in $RCLONE_REMOTE"
+        exit 2
     fi
     log "rclone ok"
 }

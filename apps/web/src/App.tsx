@@ -3,6 +3,7 @@ import { useSyncEngine } from './sync/useSyncEngine';
 import { useOnboardingWizard } from './onboarding/useOnboardingWizard';
 import { OnboardingModal } from './onboarding/OnboardingModal';
 import { Loader2 } from 'lucide-react';
+import { AuthGate } from './components/AuthGate';
 
 /**
  * App root — Phase 8 introduces the onboarding gate.
@@ -23,6 +24,14 @@ import { Loader2 } from 'lucide-react';
  * Thus the engine never starts until the wizard is done — no race.
  */
 export default function App() {
+  return (
+    <AuthGate>
+      {(onLogout) => <AuthenticatedApp onLogout={onLogout} />}
+    </AuthGate>
+  );
+}
+
+function AuthenticatedApp({ onLogout }: { onLogout: () => Promise<void> }) {
   const wizard = useOnboardingWizard();
 
   // Wizard is active — render modal-only, no Layout, no sync engine.
@@ -60,7 +69,7 @@ export default function App() {
   }
 
   // Wizard done / not needed — normal app shell.
-  return <AppShell />;
+  return <AppShell onLogout={onLogout} />;
 }
 
 /**
@@ -68,7 +77,7 @@ export default function App() {
  * into its own component guarantees `useSyncEngine` is mounted
  * strictly AFTER any wizard activity has settled.
  */
-function AppShell() {
+function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
   useSyncEngine();
-  return <Layout />;
+  return <Layout onLogout={onLogout} />;
 }

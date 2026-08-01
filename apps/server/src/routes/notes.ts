@@ -261,13 +261,21 @@ notesRoutes.delete('/:id', async (c) => {
 
   const ids = await collectDescendantIds(id);
   if (ids.length === 0) {
-    return c.json({ error: 'Note not found' }, 404);
+    // DELETE is intentionally idempotent: an offline mutation may arrive
+    // after another device already purged this note. Returning success keeps
+    // the client queue from producing a permanent, noisy 404 retry.
+    return c.json({ ok: true, deleted: 0 });
   }
 
   // Soft-delete all collected ids using Drizzle's inArray (parameterized).
   await db
     .update(notes)
-    .set({ isDeleted: true, deletedAt: now, updatedAt: now })
+    .set({
+      isDeleted: true,
+      deletedAt: now,
+      updatedAt: now,
+      version: sql`${notes.version} + 1`,
+    })
     .where(inArray(notes.id, ids));
 
   return c.json({ ok: true, deleted: ids.length });
@@ -280,12 +288,20 @@ notesRoutes.post('/:id/restore', async (c) => {
 
   const ids = await collectDescendantIds(id);
   if (ids.length === 0) {
-    return c.json({ error: 'Note not found' }, 404);
+    // Restore is also idempotent for stale offline mutations. The desired
+    // state cannot be applied to a row that was already purged, but there is
+    // nothing left for the client to retry.
+    return c.json({ ok: true, restored: 0 });
   }
 
   await db
     .update(notes)
-    .set({ isDeleted: false, deletedAt: null, updatedAt: now })
+    .set({
+      isDeleted: false,
+      deletedAt: null,
+      updatedAt: now,
+      version: sql`${notes.version} + 1`,
+    })
     .where(inArray(notes.id, ids));
 
   return c.json({ ok: true, restored: ids.length });
@@ -303,7 +319,9 @@ notesRoutes.post('/:id/permanent', async (c) => {
     .limit(1);
 
   if (rows.length === 0) {
-    return c.json({ error: 'Note not found' }, 404);
+    // Hard-delete is idempotent too: a retention job or another device may
+    // already have removed the note before this queued mutation arrived.
+    return c.json({ ok: true, deleted: 0 });
   }
   if (!rows[0].isDeleted) {
     return c.json({ error: 'Note is not in trash' }, 400);

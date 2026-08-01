@@ -44,8 +44,8 @@ vi.mock('../api/client', () => ({
       updatedAt: Date.now(),
       version: 1,
     })),
-    presignUpload: vi.fn(async () => ({
-      attachmentId: 'a',
+    presignUpload: vi.fn(async (body: { attachmentId?: string }) => ({
+      attachmentId: body.attachmentId ?? 'a',
       uploadUrl: 'https://example.com/upload',
       r2Key: 'k',
     })),

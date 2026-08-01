@@ -113,6 +113,8 @@ export interface SyncSnapshot {
 // ---------------------------------------------------------------------------
 
 export interface PresignRequest {
+  /** Client-generated UUID shared by IndexedDB, Postgres, and the note HTML ref. */
+  attachmentId?: string;
   filename: string;
   mime: string;
   sizeBytes: number;

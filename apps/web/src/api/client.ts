@@ -51,6 +51,17 @@ export function shouldSync(): boolean {
 }
 
 /**
+ * Validate the HttpOnly session cookie after a full page load. The cookie
+ * itself is intentionally unreadable from JavaScript; a protected request
+ * is the source of truth for whether sync may run.
+ */
+export async function checkSession(): Promise<{ createdAt: number; noteCount: number }> {
+  const result = await apiFetch<{ createdAt: number; noteCount: number }>('/me/info');
+  setHasSession(true);
+  return result;
+}
+
+/**
  * Low-level fetch wrapper. Throws on non-2xx, returns parsed JSON.
  * The error includes the `ApiErrorResponse` body when the server
  * provides one (e.g. 409 Conflict with a `remote` note).
@@ -78,6 +89,7 @@ async function apiFetch<T>(
       };
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
+    credentials: 'include',
     headers: baseHeaders,
   });
 
@@ -134,7 +146,7 @@ export const api = {
   },
 
   async getMeInfo(): Promise<{ createdAt: number; noteCount: number }> {
-    return apiFetch('/me/info');
+    return checkSession();
   },
 
   // --- Notes ---

@@ -14,6 +14,7 @@ import {
   ChevronsUpDown,
   Inbox,
   Trash2,
+  LogOut,
 } from 'lucide-react';
 import { TreeView } from './TreeView';
 import { TrashView } from './TrashView';
@@ -36,9 +37,10 @@ import { api } from '../api/client';
 interface SidebarProps {
   className?: string;
   onClose?: () => void;
+  onLogout?: () => Promise<void>;
 }
 
-export function Sidebar({ className, onClose }: SidebarProps) {
+export function Sidebar({ className, onClose, onLogout }: SidebarProps) {
   // Granular Zustand selectors: each subscription is scoped to a single
   // field so Sidebar only re-renders when one of the fields we actually
   // render (search query, theme) changes. Action reads use getState() so
@@ -282,6 +284,17 @@ export function Sidebar({ className, onClose }: SidebarProps) {
       {/* Footer Settings */}
       <div className="p-3 border-t border-white/60 dark:border-white/5 flex justify-between items-center text-zinc-500 dark:text-zinc-400 shrink-0">
         <div className="flex gap-1">
+          {onLogout && (
+            <button
+              type="button"
+              onClick={() => void onLogout()}
+              className="p-1.5 hover:bg-red-100/60 dark:hover:bg-red-900/30 rounded transition-colors hover:text-red-600 dark:hover:text-red-400"
+              title="Logout"
+              aria-label="Logout"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          )}
           <button
             type="button"
             onClick={handleExport}

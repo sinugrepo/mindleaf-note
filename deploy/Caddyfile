@@ -17,8 +17,8 @@
 # =============================================================================
 
 # Match the production domain. Cloudflare DNS A record must point to
-# this VPS. Replace YOUR_DOMAIN with the actual FQDN before install.
-YOUR_DOMAIN {
+# this VPS. The repository is configured for notes.sinug.my.id.
+notes.sinug.my.id {
     # ------------------------------------------------------------------
     # Phase 10 — Global security headers.
     #
@@ -89,6 +89,7 @@ YOUR_DOMAIN {
         root * /var/www/mindleaf/dist
         encode gzip zstd
         try_files {path} /index.html
+        file_server
         header {
             # Phase 10 — Strict Content-Security-Policy for the SPA.
             #
@@ -96,22 +97,25 @@ YOUR_DOMAIN {
             #   - default-src 'self' — block any fetch/XHR/script/img
             #     that isn't same-origin. This is the foundation;
             #     everything below grants narrow exceptions.
-            #   - script-src 'self' — Vite emits a hashed external
-            #     bundle, no inline scripts in production. Adding
-            #     any inline script would be a CSP violation that
-            #     surfaces in devtools and blocks execution.
+            #   - script-src 'self' https://static.cloudflareinsights.com —
+            #     Vite emits a hashed external bundle and Cloudflare Web
+            #     Analytics may inject its beacon script in production.
+            #     No inline scripts are allowed.
             #   - style-src 'self' 'unsafe-inline' — Tailwind v4
             #     occasionally injects inline style attributes for
             #     theme reactivity. Single-user app, the XSS risk
             #     is acceptable; trimming this would require
             #     auditing every stylesheet.
-            #   - img-src 'self' data: blob: https://*.r2.cloudflarestorage.com
-            #     — The SPA renders note images via presigned GET
-            #     URLs (Phase 4) that point at the R2 hostname.
-            #     `data:` and `blob:` allow inline-image pastes in
-            #     the TipTap editor.
+            #   - img-src 'self' data: blob: attachment:
+            #     https://*.r2.cloudflarestorage.com — The SPA renders
+            #     note images via presigned GET URLs and its internal
+            #     attachment:<id> references resolved to blob URLs by
+            #     TipTap. `data:` and `blob:` support legacy inline
+            #     images and local image previews.
             #   - connect-src 'self' https://*.r2.cloudflarestorage.com
-            #     — Same R2 reach for presigned PUT (image upload).
+            #     https://cloudflareinsights.com
+            #     https://*.cloudflareinsights.com — Same R2 reach for
+            #     presigned PUT plus Cloudflare Web Analytics beacons.
             #   - font-src 'self' data: — Vite's font handling.
             #   - frame-ancestors 'none' — redundant with
             #     X-Frame-Options: DENY but is the CSP-native way
@@ -125,7 +129,7 @@ YOUR_DOMAIN {
             # No `report-uri` / `report-to` — the maintainer is
             # alone on the system, log-spam endpoints would burn
             # VPS bandwidth for zero actionable value.
-            Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.r2.cloudflarestorage.com; font-src 'self' data:; connect-src 'self' https://*.r2.cloudflarestorage.com; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"
+            Content-Security-Policy "default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; script-src-elem 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: attachment: https://*.r2.cloudflarestorage.com; font-src 'self' data:; connect-src 'self' https://*.r2.cloudflarestorage.com https://cloudflareinsights.com https://*.cloudflareinsights.com; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"
         }
     }
 

@@ -36,11 +36,10 @@ export function useSyncEngine(): void {
       }
     })();
 
-    // Always start the drainer — it self-gates on shouldSync().
-    // The drainer runs on a 5-second interval and also gets notified
-    // directly by the queue module when a new mutation is enqueued
-    // (via notifyDrainer()). No Dexie event listener needed — the
-    // drainer's interval + direct notification covers all cases.
+    // Start the queue worker even if the session is temporarily offline.
+    // It self-gates on shouldSync(), and will begin draining as soon as
+    // the authenticated shell is mounted again.
+    startDrainer();
 
     // Periodic delta pull (every 60 seconds).
     if (shouldSync()) {

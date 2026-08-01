@@ -18,6 +18,21 @@ import { db, type PendingMutation } from '../db/db';
 
 const MAX_ATTEMPTS = 10;
 
+/**
+ * A newer optimistic edit may already be present when an older request
+ * returns. Only mark the row clean when its local optimistic version is not
+ * ahead of the server response; otherwise the newer mutation must remain
+ * dirty and will be drained next.
+ */
+async function settleNoteAfterPush(noteId: string, serverVersion: number): Promise<void> {
+  const local = await db.notes.get(noteId);
+  if (!local || (local.version ?? 0) > serverVersion) return;
+  await db.notes.update(noteId, {
+    version: serverVersion,
+    dirty: false,
+  });
+}
+
 /** Result of a single push attempt. */
 export type PushResult =
   | { status: 'ok' }
@@ -43,10 +58,7 @@ export async function pushMutation(
         const payload = JSON.parse(mutation.payload);
         const result = await api.createNote(payload);
         // Update local version from server response.
-        await db.notes.update(result.id, {
-          version: result.version,
-          dirty: false,
-        });
+        await settleNoteAfterPush(result.id, result.version);
         return { status: 'ok' };
       }
 
@@ -57,15 +69,21 @@ export async function pushMutation(
           payload,
           mutation.baseVersion ?? undefined,
         );
-        await db.notes.update(result.id, {
-          version: result.version,
-          dirty: false,
-        });
+        await settleNoteAfterPush(result.id, result.version);
         return { status: 'ok' };
       }
 
       case 'delete_note': {
-        await api.deleteNote(mutation.resourceId);
+        try {
+          await api.deleteNote(mutation.resourceId);
+        } catch (deleteErr) {
+          // A stale offline delete can arrive after the note was already
+          // purged on another device (or after a previous successful push
+          // whose queue acknowledgement was lost). The desired state is
+          // already true, so do not retry this mutation forever.
+          const deleteE = deleteErr as Error & { status?: number };
+          if (deleteE.status !== 404) throw deleteErr;
+        }
         // Clear dirty on the root + all descendants — the server
         // cascaded the soft-delete, so local state now matches server.
         const deletePayload = JSON.parse(mutation.payload);
@@ -77,7 +95,15 @@ export async function pushMutation(
       }
 
       case 'restore_note': {
-        await api.restoreNote(mutation.resourceId);
+        try {
+          await api.restoreNote(mutation.resourceId);
+        } catch (restoreErr) {
+          // If the note was permanently deleted elsewhere, restoring it is
+          // already impossible and retrying a 404 only spams the API every
+          // drain interval. Treat this stale mutation as settled.
+          const restoreE = restoreErr as Error & { status?: number };
+          if (restoreE.status !== 404) throw restoreErr;
+        }
         // Clear dirty on the root + all descendants.
         const restorePayload = JSON.parse(mutation.payload);
         const restoreIds: string[] = [mutation.resourceId, ...(restorePayload.descendantIds ?? [])];
@@ -145,6 +171,7 @@ async function pushAttachment(mutation: PendingMutation): Promise<PushResult> {
 
   // 1. Get presigned PUT URL from backend
   const presign = await api.presignUpload({
+    attachmentId: att.id,
     filename: att.name || 'image',
     mime: att.mime,
     sizeBytes: att.blob.size,

@@ -66,6 +66,11 @@ async function getNoteVersion(noteId: string): Promise<number> {
 // Note mutations (optimistic + enqueue)
 // ---------------------------------------------------------------------------
 
+// Autosave can fire many times before the previous request has reached the
+// server. Serialize patches per note so each mutation observes the optimistic
+// version written by the preceding mutation and receives a unique If-Match.
+const patchChains = new Map<string, Promise<void>>();
+
 /**
  * Create a new note. Writes to IndexedDB immediately, enqueues a
  * `create_note` mutation for the drainer to POST to the backend.
@@ -104,27 +109,37 @@ export async function queuedCreateNote(
  * Writes optimistically to IndexedDB, enqueues a `patch_note` mutation
  * with the current version for `If-Match` optimistic locking.
  */
-export async function queuedPatchNote(
+export function queuedPatchNote(
   noteId: string,
   updates: Partial<Pick<Note, 'title' | 'content' | 'isExpanded' | 'order' | 'parentId' | 'tags'>>,
   now: number = Date.now(),
 ): Promise<void> {
-  const currentVersion = await getNoteVersion(noteId);
+  const previous = patchChains.get(noteId) ?? Promise.resolve();
+  const operation = previous.catch(() => undefined).then(async () => {
+    const currentVersion = await getNoteVersion(noteId);
+    const optimisticVersion = currentVersion + 1;
 
-  // Map `order` → `orderIdx` in the API payload (the backend column
-  // is `order_idx`, the DTO field is `orderIdx`).
-  const apiPayload: Record<string, unknown> = { ...updates };
-  if (updates.order !== undefined) {
-    apiPayload.orderIdx = updates.order;
-    delete apiPayload.order;
-  }
+    // Map `order` → `orderIdx` in the API payload (the backend column
+    // is `order_idx`, the DTO field is `orderIdx`).
+    const apiPayload: Record<string, unknown> = { ...updates };
+    if (updates.order !== undefined) {
+      apiPayload.orderIdx = updates.order;
+      delete apiPayload.order;
+    }
 
-  await db.notes.update(noteId, {
-    ...updates,
-    updatedAt: now,
-    dirty: true,
+    await db.notes.update(noteId, {
+      ...updates,
+      updatedAt: now,
+      version: optimisticVersion,
+      dirty: true,
+    });
+    await enqueue('patch_note', noteId, apiPayload, currentVersion);
   });
-  await enqueue('patch_note', noteId, apiPayload, currentVersion);
+  const tracked = operation.finally(() => {
+    if (patchChains.get(noteId) === tracked) patchChains.delete(noteId);
+  });
+  patchChains.set(noteId, tracked);
+  return tracked;
 }
 
 /**
@@ -141,10 +156,16 @@ export async function queuedDeleteNote(
   now: number = Date.now(),
 ): Promise<void> {
   const allIds = [noteId, ...descendantIds];
+  const deleteRows = await db.notes.bulkGet(allIds);
   await db.notes.bulkUpdate(
-    allIds.map((id) => ({
+    allIds.map((id, index) => ({
       key: id,
-      changes: { deletedAt: now, updatedAt: now, dirty: true },
+      changes: {
+        deletedAt: now,
+        updatedAt: now,
+        version: (deleteRows[index]?.version ?? 0) + 1,
+        dirty: true,
+      },
     })),
   );
   // Only enqueue one mutation for the root — the backend cascades.
@@ -163,10 +184,16 @@ export async function queuedRestoreNote(
   now: number = Date.now(),
 ): Promise<void> {
   const allIds = [noteId, ...descendantIds];
+  const restoreRows = await db.notes.bulkGet(allIds);
   await db.notes.bulkUpdate(
-    allIds.map((id) => ({
+    allIds.map((id, index) => ({
       key: id,
-      changes: { deletedAt: null, updatedAt: now, dirty: true },
+      changes: {
+        deletedAt: null,
+        updatedAt: now,
+        version: (restoreRows[index]?.version ?? 0) + 1,
+        dirty: true,
+      },
     })),
   );
   await enqueue('restore_note', noteId, { descendantIds });
