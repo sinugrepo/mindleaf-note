@@ -12,8 +12,8 @@
 #     refuses to start without a DB connection (Drizzle connection in
 #     db/index.ts throws on first miss).
 #   - Secrets live in `/opt/mindleaf/.env` (chmod 600, owner mindleaf)
-#     — EnvironmentFile reads them without exposing via the unit's own
-#     environment (less surprising in `ps`/`systemctl show`).
+#     — the unified installer keeps this canonical path so EnvironmentFile
+#     reads them without exposing values in the unit's own environment.
 #
 # Hardening baseline (systemd ≥ 240):
 #   - NoNewPrivileges — drop suid/sgid elevation.

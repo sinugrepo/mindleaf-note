@@ -39,6 +39,12 @@ set -euo pipefail
 # bootstrap does not require the full source to exist in /opt first.
 BOOTSTRAP_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 BOOTSTRAP_SOURCE_ROOT="$(cd -- "$BOOTSTRAP_SCRIPT_DIR/../.." && pwd -P)"
+INSTALL_ROOT="${INSTALL_ROOT:-/opt/mindleaf}"
+
+[[ "$INSTALL_ROOT" == /* && "$INSTALL_ROOT" != *[!A-Za-z0-9_./-]* ]] || {
+    echo "ERROR: invalid INSTALL_ROOT: $INSTALL_ROOT" >&2
+    exit 1
+}
 
 # The account that edits the checkout and runs scripts/deploy.sh. When this
 # script is invoked through `sudo`, SUDO_USER identifies that operator (for
@@ -136,17 +142,17 @@ else
     log "user already exists — skipping"
 fi
 
-# /opt/mindleaf as canonical install root (spec §11).
-mkdir -p /opt/mindleaf
-chown mindleaf:mindleaf /opt/mindleaf
-chmod 755 /opt/mindleaf
+# Canonical install root (spec §11 defaults to /opt/mindleaf).
+mkdir -p "$INSTALL_ROOT"
+chown mindleaf:mindleaf "$INSTALL_ROOT"
+chmod 755 "$INSTALL_ROOT"
 
 # ---------------------------------------------------------------------------
 # Step 3 / 4 — secrets + .env
 # ---------------------------------------------------------------------------
 log "Step 3: provision /opt/mindleaf/.env from template"
 
-ENV_FILE="/opt/mindleaf/.env"
+ENV_FILE="$INSTALL_ROOT/.env"
 TEMPLATE="${BOOTSTRAP_TEMPLATE:-$BOOTSTRAP_SOURCE_ROOT/apps/server/.env.production.example}"
 
 # The template is read from the checkout containing this script, not from
@@ -193,7 +199,7 @@ chown mindleaf:mindleaf "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 # The repository may have been copied by root. Let the service account
 # install workspace dependencies and create build output.
-chown -R mindleaf:mindleaf /opt/mindleaf
+chown -R mindleaf:mindleaf "$INSTALL_ROOT"
 chmod 600 "$ENV_FILE"
 
 # ---------------------------------------------------------------------------
@@ -246,12 +252,12 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 \
 # decoded password so credentials remain valid even when DATABASE_URL contains
 # URL-encoded punctuation.
 PGPASSWORD_PLACEHOLDER="$(printf '%s' "$DB_PASSWORD" | sed 's/[\\:]/\\&/g')"
-cat > /opt/mindleaf/.pgpass <<PGPASS
+cat > "$INSTALL_ROOT/.pgpass" <<PGPASS
 localhost:5432:mindleaf:mindleaf:$PGPASSWORD_PLACEHOLDER
 *:5432:mindleaf:mindleaf:$PGPASSWORD_PLACEHOLDER
 PGPASS
-chown mindleaf:mindleaf /opt/mindleaf/.pgpass
-chmod 600 /opt/mindleaf/.pgpass
+chown mindleaf:mindleaf "$INSTALL_ROOT/.pgpass"
+chmod 600 "$INSTALL_ROOT/.pgpass"
 log ".pgpass provisioned (chmod 600)"
 
 # ---------------------------------------------------------------------------
@@ -259,8 +265,8 @@ log ".pgpass provisioned (chmod 600)"
 # ---------------------------------------------------------------------------
 log "Step 6: write /opt/mindleaf/.config/rclone/rclone.conf"
 
-mkdir -p /opt/mindleaf/.config/rclone
-RCLONE_PATH=/opt/mindleaf/.config/rclone/rclone.conf
+mkdir -p "$INSTALL_ROOT/.config/rclone"
+RCLONE_PATH="$INSTALL_ROOT/.config/rclone/rclone.conf"
 if [[ ! -f "$RCLONE_PATH" ]]; then
     if [[ -n "${RCLONE_CONF_B64:-}" ]]; then
         echo "$RCLONE_CONF_B64" | base64 -d > "$RCLONE_PATH"
@@ -292,13 +298,13 @@ log "Step 7: apply Drizzle schema (npm run db:push)"
 # restore. `--force` is intentional: fresh-VPS migration must never pause
 # for an interactive drizzle-kit confirmation prompt. The deploy phase
 # repeats the idempotent push after restore.
-if [[ -f /opt/mindleaf/apps/server/package.json ]]; then
+if [[ -f "$INSTALL_ROOT/apps/server/package.json" ]]; then
     install -d -o mindleaf -g mindleaf -m 0700 /home/mindleaf/.npm
-    sudo -u mindleaf env HOME=/home/mindleaf npm_config_cache=/home/mindleaf/.npm bash <<'SU'
-cd /opt/mindleaf
+    sudo -u mindleaf env HOME=/home/mindleaf npm_config_cache=/home/mindleaf/.npm bash <<SU
+cd "$INSTALL_ROOT"
 # Load .env so drizzle-kit sees DATABASE_URL.
 set -a
-source /opt/mindleaf/.env
+source "$INSTALL_ROOT/.env"
 set +a
 env -u NODE_ENV -u NPM_CONFIG_PRODUCTION -u NPM_CONFIG_OMIT npm ci --include=dev
 npm run db:push --workspace=@mindleaf/server -- --force
@@ -331,5 +337,5 @@ log "bootstrap complete"
 log "next steps:"
 log "  1. As $DEPLOY_USER, from the editable checkout, run ./scripts/deploy.sh --dry-run"
 log "  2. As $DEPLOY_USER, from the editable checkout, run ./scripts/deploy.sh"
-log "     (the deployer stages the release into /opt/mindleaf)"
+log "     (the deployer stages the release into $INSTALL_ROOT)"
 log "  3. Verify sudo systemctl status mindleaf caddy postgresql"

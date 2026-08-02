@@ -40,10 +40,11 @@ PG_DB="${PG_DB:-mindleaf}"
 PG_HOST="${PG_HOST:-localhost}"
 PG_PORT="${PG_PORT:-5432}"
 PG_USER="${PG_USER:-mindleaf}"
-PGPASSFILE="${PGPASSFILE:-/opt/mindleaf/.pgpass}"
+INSTALL_ROOT="${INSTALL_ROOT:-/opt/mindleaf}"
+PGPASSFILE="${PGPASSFILE:-$INSTALL_ROOT/.pgpass}"
 
 RCLONE_REMOTE="${RCLONE_REMOTE:-r2:mindleaf-prod-backups/db}"
-RCLONE_CONFIG="${RCLONE_CONFIG:-/opt/mindleaf/.config/rclone/rclone.conf}"
+RCLONE_CONFIG="${RCLONE_CONFIG:-$INSTALL_ROOT/.config/rclone/rclone.conf}"
 RETENTION_DAYS="${RETENTION_DAYS:-30}"
 
 LOCK_FILE="${LOCK_FILE:-/var/lock/mindleaf-backup.lock}"
@@ -92,7 +93,7 @@ dump_database() {
     log "pg_dump -Fc -d $PG_DB → $out_path (start)"
 
     # Avoid embedding a password in the command line. bootstrap.sh stores
-    # the credentials at /opt/mindleaf/.pgpass, so pass the path explicitly;
+    # the credentials at "$INSTALL_ROOT/.pgpass", so pass the path explicitly;
     # cron's HOME is not a stable contract for locating .pgpass.
     if ! PGPASSFILE="$PGPASSFILE" pg_dump \
         --host="$PG_HOST" \

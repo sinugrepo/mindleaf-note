@@ -208,9 +208,11 @@ if [[ $ROLLBACK -eq 1 ]]; then
         FRONTEND_BACKUP_PATH="$(sudo find "$FRONTEND_BACKUP_ROOT" -maxdepth 1 -type d -name 'dist.bak.*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2- || true)"
         [[ -n "$TARGET_BACKUP_PATH" ]] || { err "no runtime backup found for $DEPLOY_ROOT"; exit 66; }
         restore_release
-        sudo install -m 0644 "$DEPLOY_ROOT/deploy/Caddyfile" /etc/caddy/Caddyfile
-        sudo install -m 0644 "$DEPLOY_ROOT/deploy/systemd/mindleaf.service" /etc/systemd/system/mindleaf.service
-        sudo install -m 0644 "$DEPLOY_ROOT/deploy/cron.d/mindleaf-backup" /etc/cron.d/mindleaf-backup
+        CADDY_DOMAIN="$(awk -F= '$1 == "ALLOWED_ORIGIN" { value=$2; sub(/^\047/, "", value); sub(/\047$/, "", value); sub(/^\042/, "", value); sub(/\042$/, "", value); sub(/\/$/, "", value); sub(/^https?:\/\//, "", value); print value; exit }' "$DEPLOY_ROOT/.env")"
+        [[ "$CADDY_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || { err "ALLOWED_ORIGIN must contain a valid hostname for Caddy"; exit 66; }
+        sed "s#__MINDLEAF_DOMAIN__#$CADDY_DOMAIN#" "$DEPLOY_ROOT/deploy/Caddyfile" | sudo tee /etc/caddy/Caddyfile >/dev/null
+        sed "s#/opt/mindleaf#$DEPLOY_ROOT#g" "$DEPLOY_ROOT/deploy/systemd/mindleaf.service" | sudo tee /etc/systemd/system/mindleaf.service >/dev/null
+        sed "s#/opt/mindleaf#$DEPLOY_ROOT#g" "$DEPLOY_ROOT/deploy/cron.d/mindleaf-backup" | sudo tee /etc/cron.d/mindleaf-backup >/dev/null
         sudo caddy validate --config /etc/caddy/Caddyfile
         sudo systemctl daemon-reload
         sudo systemctl reload caddy
@@ -340,14 +342,19 @@ else
     sudo test -f /etc/systemd/system/mindleaf.service && sudo cp /etc/systemd/system/mindleaf.service "$SYSTEMD_BACKUP_PATH" || true
     sudo test -f /etc/cron.d/mindleaf-backup && sudo cp /etc/cron.d/mindleaf-backup "$CRON_BACKUP_PATH" || true
 
-    sudo install -m 0644 "$DEPLOY_ROOT/deploy/Caddyfile" /etc/caddy/Caddyfile
+    CADDY_DOMAIN=""
+    if [[ -f "$TARGET_ENV" ]]; then
+        CADDY_DOMAIN="$(awk -F= '$1 == "ALLOWED_ORIGIN" { value=$2; sub(/^\047/, "", value); sub(/\047$/, "", value); sub(/^\042/, "", value); sub(/\042$/, "", value); sub(/\/$/, "", value); sub(/^https?:\/\//, "", value); print value; exit }' "$TARGET_ENV")"
+    fi
+    [[ "$CADDY_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || { err "ALLOWED_ORIGIN must contain a valid hostname for Caddy"; exit 66; }
+    sed "s#__MINDLEAF_DOMAIN__#$CADDY_DOMAIN#" "$DEPLOY_ROOT/deploy/Caddyfile" | sudo tee /etc/caddy/Caddyfile >/dev/null
     CADDY_CONFIG_INSTALLED=1
     sudo caddy validate --config /etc/caddy/Caddyfile
     sudo systemctl reload caddy || sudo systemctl start caddy
 
-    sudo install -m 0644 "$DEPLOY_ROOT/deploy/systemd/mindleaf.service" /etc/systemd/system/mindleaf.service
+    sed "s#/opt/mindleaf#$DEPLOY_ROOT#g" "$DEPLOY_ROOT/deploy/systemd/mindleaf.service" | sudo tee /etc/systemd/system/mindleaf.service >/dev/null
     SYSTEMD_CONFIG_INSTALLED=1
-    sudo install -m 0644 "$DEPLOY_ROOT/deploy/cron.d/mindleaf-backup" /etc/cron.d/mindleaf-backup
+    sed "s#/opt/mindleaf#$DEPLOY_ROOT#g" "$DEPLOY_ROOT/deploy/cron.d/mindleaf-backup" | sudo tee /etc/cron.d/mindleaf-backup >/dev/null
     CRON_CONFIG_INSTALLED=1
     sudo systemctl daemon-reload
     sudo systemctl enable mindleaf caddy

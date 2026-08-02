@@ -33,6 +33,8 @@
 #
 # The command emits progress continuously and applies a total phase timeout so
 # a package manager, migration prompt, or network operation cannot hang forever.
+# The final deploy runs as root because this script already owns the migration
+# lock and the deployer uses the dedicated mindleaf account for the service.
 # =============================================================================
 
 set -Eeuo pipefail
@@ -93,11 +95,11 @@ fi
 [[ "$PHASE_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || {
     echo "ERROR: --timeout must be a positive integer" >&2
     exit 64
-}
-[[ "$INSTALL_ROOT" == /* && "$INSTALL_ROOT" != *[!A-Za-z0-9_./-]* ]] || {
+}[[ "$INSTALL_ROOT" == /* && "$INSTALL_ROOT" != *[!A-Za-z0-9_./-]* ]] || {
     echo "ERROR: INSTALL_ROOT is invalid" >&2
     exit 64
 }
+export INSTALL_ROOT
 
 log() { printf '\033[1;32m[migrate]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
@@ -218,14 +220,14 @@ timeout --signal=TERM --kill-after=30s "${PHASE_TIMEOUT}s" \
     bash "$INSTALL_ROOT/deploy/scripts/bootstrap.sh"
 
 step "Validating PostgreSQL and object storage"
+RCLONE_REMOTE="${RCLONE_REMOTE:-r2:mindleaf-prod-backups/db}"
 pg_isready -h localhost -p 5432 -U mindleaf -d mindleaf
 RCLONE_CONFIG="$INSTALL_ROOT/.config/rclone/rclone.conf" \
-    rclone lsf --files-only r2:mindleaf-prod-backups/db >/dev/null
+    rclone lsf --files-only "$RCLONE_REMOTE" >/dev/null
 log "PostgreSQL and R2 connectivity verified"
 
 if [[ $NO_RESTORE -eq 0 ]]; then
     step "Restoring database from R2"
-    RCLONE_REMOTE="${RCLONE_REMOTE:-r2:mindleaf-prod-backups/db}"
     if [[ "$BACKUP_OBJECT" == "latest" ]]; then
         BACKUP_OBJECT="$(RCLONE_CONFIG="$INSTALL_ROOT/.config/rclone/rclone.conf" \
             rclone lsf --files-only "$RCLONE_REMOTE" \
@@ -251,7 +253,7 @@ fi
 
 step "Deploying application locally"
 timeout --signal=TERM --kill-after=30s "${PHASE_TIMEOUT}s" \
-    sudo -u mindleaf -H bash -lc "cd '$INSTALL_ROOT' && ./scripts/deploy.sh --timeout 60"
+    env DEPLOY_ROOT="$INSTALL_ROOT" bash "$INSTALL_ROOT/scripts/deploy.sh" --timeout 60
 
 step "Final migration checks"
 # These checks intentionally do not print credentials or database contents.

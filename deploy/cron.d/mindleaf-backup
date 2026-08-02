@@ -18,4 +18,4 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 MAILTO=""
 
-0 3 * * *  mindleaf  /opt/mindleaf/scripts/backup.sh >> /var/log/mindleaf-backup.log 2>&1
+0 3 * * *  mindleaf  INSTALL_ROOT=/opt/mindleaf /opt/mindleaf/scripts/backup.sh >> /var/log/mindleaf-backup.log 2>&1
