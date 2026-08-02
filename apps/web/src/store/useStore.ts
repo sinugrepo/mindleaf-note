@@ -33,9 +33,11 @@ interface AppState {
   toggleTagFilter: (tag: string) => void;
   clearTagFilter: () => void;
   savedViews: SavedView[];
+  activeSavedViewId: string | null;
   addSavedView: (name: string) => void;
   deleteSavedView: (id: string) => void;
   applySavedView: (id: string) => void;
+  clearActiveSavedView: () => void;
   selectedNoteIds: string[];
   toggleNoteSelection: (id: string) => void;
   clearNoteSelection: () => void;
@@ -66,40 +68,48 @@ export const useStore = create<AppState>()(
       activeNoteId: null,
       setActiveNoteId: (id) => set({ activeNoteId: id }),
       searchQuery: '',
-      setSearchQuery: (query) => set({ searchQuery: query }),
+      setSearchQuery: (query) => set({ searchQuery: query, activeSavedViewId: null }),
       theme: 'system',
       setTheme: (theme) => set({ theme }),
       sortMode: DEFAULT_SORT_MODE,
-      setSortMode: (mode) => set({ sortMode: mode }),
+      setSortMode: (mode) => set({ sortMode: mode, activeSavedViewId: null }),
       sortDirection: DEFAULT_SORT_DIRECTION,
-      setSortDirection: (direction) => set({ sortDirection: direction }),
+      setSortDirection: (direction) => set({ sortDirection: direction, activeSavedViewId: null }),
       tagFilter: [],
-      setTagFilter: (tags) => set({ tagFilter: tags }),
+      setTagFilter: (tags) => set({ tagFilter: tags, activeSavedViewId: null }),
       toggleTagFilter: (tag) =>
         set((state) => {
           const tags = new Set(state.tagFilter);
           if (tags.has(tag)) tags.delete(tag);
           else tags.add(tag);
-          return { tagFilter: Array.from(tags) };
+          return { tagFilter: Array.from(tags), activeSavedViewId: null };
         }),
-      clearTagFilter: () => set({ tagFilter: [] }),
+      clearTagFilter: () => set({ tagFilter: [], activeSavedViewId: null }),
       savedViews: [],
+      activeSavedViewId: null,
       addSavedView: (name) =>
-        set((state) => ({
-          savedViews: [
-            ...state.savedViews,
-            {
-              id: makeSavedViewId(),
-              name,
-              searchQuery: state.searchQuery,
-              tagFilter: [...state.tagFilter],
-              sortMode: state.sortMode,
-              sortDirection: state.sortDirection,
-            },
-          ],
-        })),
+        set((state) => {
+          const id = makeSavedViewId();
+          return {
+            savedViews: [
+              ...state.savedViews,
+              {
+                id,
+                name,
+                searchQuery: state.searchQuery,
+                tagFilter: [...state.tagFilter],
+                sortMode: state.sortMode,
+                sortDirection: state.sortDirection,
+              },
+            ],
+            activeSavedViewId: id,
+          };
+        }),
       deleteSavedView: (id) =>
-        set((state) => ({ savedViews: state.savedViews.filter((view) => view.id !== id) })),
+        set((state) => ({
+          savedViews: state.savedViews.filter((view) => view.id !== id),
+          activeSavedViewId: state.activeSavedViewId === id ? null : state.activeSavedViewId,
+        })),
       applySavedView: (id) =>
         set((state) => {
           const view = state.savedViews.find((candidate) => candidate.id === id);
@@ -112,8 +122,10 @@ export const useStore = create<AppState>()(
             // field. Falling back here prevents applying one from poisoning
             // the sort comparator with `undefined`.
             sortDirection: view.sortDirection ?? DEFAULT_SORT_DIRECTION,
+            activeSavedViewId: view.id,
           };
         }),
+      clearActiveSavedView: () => set({ activeSavedViewId: null }),
       selectedNoteIds: [],
       toggleNoteSelection: (id) =>
         set((state) => ({
@@ -133,8 +145,9 @@ export const useStore = create<AppState>()(
         sortDirection: state.sortDirection,
         tagFilter: state.tagFilter,
         savedViews: state.savedViews,
+        activeSavedViewId: state.activeSavedViewId,
       }),
-      version: 4,
+      version: 5,
       migrate: (persistedState, fromVersion): Partial<AppState> | unknown => {
         if (!persistedState || typeof persistedState !== 'object' || Array.isArray(persistedState)) {
           return {};
@@ -162,6 +175,11 @@ export const useStore = create<AppState>()(
             } as SavedView;
           });
         }
+        const activeViewId = out.activeSavedViewId;
+        out.activeSavedViewId =
+          typeof activeViewId === 'string' && out.savedViews.some((view) => view.id === activeViewId)
+            ? activeViewId
+            : null;
         return out;
       },
     },

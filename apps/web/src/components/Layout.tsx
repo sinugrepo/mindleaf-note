@@ -133,12 +133,12 @@ export function Layout({ onLogout }: { onLogout?: () => Promise<void> }) {
       {/* Sidebar container */}
       <div
         className={cn(
-          'absolute md:relative z-30 h-full transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] flex flex-shrink-0 overflow-hidden',
+          'absolute md:relative z-30 h-full max-w-[calc(100vw-1rem)] transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] flex flex-shrink-0 overflow-hidden',
           isSidebarOpen
             ? 'translate-x-0 shadow-2xl md:shadow-none'
             : '-translate-x-full md:translate-x-0',
           isMobile &&
-            'w-[80vw] sm:w-80 border-r border-white/60 dark:border-white/5',
+            'w-[min(88vw,22rem)] sm:w-80 border-r border-white/60 dark:border-white/5',
         )}
         style={{ width: isMobile ? undefined : isSidebarOpen ? sidebarWidth : 0 }}
       >
@@ -170,7 +170,7 @@ export function Layout({ onLogout }: { onLogout?: () => Promise<void> }) {
             <button
               type="button"
               onClick={() => setIsSidebarOpen(true)}
-              className="h-16 w-5 bg-white/80 dark:bg-zinc-800/80 backdrop-blur-md border border-zinc-200 dark:border-zinc-700 border-l-0 rounded-r-lg flex items-center justify-center text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 hover:w-6 hover:bg-white dark:hover:bg-zinc-700 transition-all shadow-sm group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60"
+              className="h-16 w-7 bg-white/80 dark:bg-zinc-800/80 backdrop-blur-md border border-zinc-200 dark:border-zinc-700 border-l-0 rounded-r-lg flex items-center justify-center text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 hover:w-8 hover:bg-white dark:hover:bg-zinc-700 transition-all shadow-sm group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60"
               title="Open Sidebar"
               aria-label="Open Sidebar"
             >

@@ -424,14 +424,14 @@ export function Editor({ noteId }: { noteId: string }) {
             setNote({ ...note, title: e.target.value });
             saveNote({ title: e.target.value });
           }}
-          className="text-4xl font-semibold bg-transparent border-0 p-0 focus:outline-none focus:ring-0 w-full text-zinc-900 dark:text-zinc-50 mb-2 placeholder:text-zinc-300 dark:placeholder:text-zinc-700"
+          className="w-full min-w-0 bg-transparent border-0 p-0 text-2xl sm:text-3xl md:text-4xl font-semibold text-zinc-900 dark:text-zinc-50 mb-2 focus:outline-none focus:ring-0 placeholder:text-zinc-300 dark:placeholder:text-zinc-700"
           placeholder="Untitled Note"
         />
-        <div className="flex items-center gap-4 text-xs text-zinc-400 dark:text-zinc-500 font-mono">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] sm:text-xs text-zinc-400 dark:text-zinc-500 font-mono">
           <span>Created: {format(note.createdAt, 'MMM d, yyyy HH:mm')}</span>
           <span>Updated: {format(note.updatedAt, 'MMM d, yyyy HH:mm')}</span>
 
-          <div className="flex items-center gap-1.5 ml-auto">
+          <div className="flex items-center gap-1.5 sm:ml-auto">
             {saveStatus === 'saving' && (
               <>
                 <AlertCircle className="w-3.5 h-3.5 text-blue-500 animate-pulse" />
@@ -460,7 +460,7 @@ export function Editor({ noteId }: { noteId: string }) {
       </div>
 
       {/* Tiptap Editor Area */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden px-5 md:px-8 pb-16 pt-2">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 sm:px-5 md:px-8 pb-16 pt-2 overscroll-contain">
         <EditorToolbar editor={editor} />
         <EditorContent editor={editor} />
       </div>

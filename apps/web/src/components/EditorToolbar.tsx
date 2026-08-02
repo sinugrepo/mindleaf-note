@@ -17,7 +17,7 @@ import { cn } from '../lib/utils';
 export function EditorToolbar({ editor }: { editor: TiptapEditor | null }) {
   if (!editor) return null;
   return (
-    <div className="flex flex-wrap gap-1 mb-6 text-zinc-500 bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-1.5 rounded-md self-start sticky top-0 z-10 shadow-sm max-w-full">
+    <div className="flex flex-wrap items-center gap-1 gap-y-1.5 mb-6 text-zinc-500 bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-1.5 rounded-md self-start sticky top-0 z-10 shadow-sm max-w-full overflow-hidden">
       <FormatButton
         active={editor.isActive('heading', { level: 1 })}
         onClick={() =>
@@ -31,8 +31,7 @@ export function EditorToolbar({ editor }: { editor: TiptapEditor | null }) {
           editor.chain().focus().toggleHeading({ level: 2 }).run()
         }
         label="H2"
-      />
-      <div className="w-px bg-zinc-200 dark:bg-zinc-700 mx-1"></div>
+      />        <div className="hidden h-4 w-px bg-zinc-200 dark:bg-zinc-700 mx-1 sm:block"></div>
       <FormatButton
         active={editor.isActive('bold')}
         onClick={() => editor.chain().focus().toggleBold().run()}
@@ -44,8 +43,7 @@ export function EditorToolbar({ editor }: { editor: TiptapEditor | null }) {
         onClick={() => editor.chain().focus().toggleItalic().run()}
         label="I"
         className="italic font-serif"
-      />
-      <div className="w-px bg-zinc-200 dark:bg-zinc-700 mx-1"></div>
+      />        <div className="hidden h-4 w-px bg-zinc-200 dark:bg-zinc-700 mx-1 sm:block"></div>
       <FormatButton
         active={editor.isActive('bulletList')}
         onClick={() => editor.chain().focus().toggleBulletList().run()}
@@ -60,8 +58,7 @@ export function EditorToolbar({ editor }: { editor: TiptapEditor | null }) {
         active={editor.isActive('codeBlock')}
         onClick={() => editor.chain().focus().toggleCodeBlock().run()}
         label="< />"
-      />
-      <div className="w-px bg-zinc-200 dark:bg-zinc-700 mx-1"></div>
+      />        <div className="hidden h-4 w-px bg-zinc-200 dark:bg-zinc-700 mx-1 sm:block"></div>
       <button
         type="button"
         onClick={() => editor.chain().focus().undo().run()}

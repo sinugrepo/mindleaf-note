@@ -26,7 +26,7 @@ export function SortDropdown({ visible }: { visible: boolean }) {
   return (
     <div
       data-testid="sort-dropdown"
-      className="flex items-center justify-end gap-1 text-[11px]"
+      className="flex w-full items-center justify-between gap-1 text-[11px] sm:justify-end"
       aria-label="Tree sort controls"
     >
       <label htmlFor="tree-sort-mode" className="sr-only">
@@ -37,7 +37,7 @@ export function SortDropdown({ visible }: { visible: boolean }) {
         value={sortMode}
         onChange={(e) => setSortMode(e.target.value as (typeof SORT_MODES)[number])}
         title={`Sort by ${SORT_MODE_LABELS[sortMode]}`}
-        className="max-w-[6.5rem] rounded border border-zinc-200/70 bg-white/50 px-1.5 py-1 font-medium text-zinc-600 outline-none transition-colors hover:bg-white focus:ring-2 focus:ring-blue-400/50 dark:border-zinc-700/70 dark:bg-zinc-900/40 dark:text-zinc-300 dark:hover:bg-zinc-800"
+        className="min-w-0 max-w-[10rem] flex-1 rounded border border-zinc-200/70 bg-white/50 px-1.5 py-1 font-medium text-zinc-600 outline-none transition-colors hover:bg-white focus:ring-2 focus:ring-blue-400/50 dark:border-zinc-700/70 dark:bg-zinc-900/40 dark:text-zinc-300 dark:hover:bg-zinc-800 sm:flex-none sm:max-w-[6.5rem]"
       >
         {SORT_MODES.map((mode) => (
           <option key={mode} value={mode}>
@@ -52,7 +52,7 @@ export function SortDropdown({ visible }: { visible: boolean }) {
         aria-label={`Sort direction: ${SORT_DIRECTION_LABELS[sortDirection]}`}
         aria-pressed={sortDirection === 'desc'}
         className={cn(
-          'inline-flex items-center gap-1 rounded border px-1.5 py-1 font-medium transition-colors',
+          'inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-1 font-medium transition-colors',
           'border-zinc-200/70 bg-white/50 text-zinc-600 hover:bg-white',
           'dark:border-zinc-700/70 dark:bg-zinc-900/40 dark:text-zinc-300 dark:hover:bg-zinc-800',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60',
