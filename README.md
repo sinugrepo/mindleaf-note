@@ -2,260 +2,258 @@
 
 > A local-first tree outliner and note-taking app for growing a digital garden.
 
-Mindleaf stores the working copy of your notes in the browser with IndexedDB, so
-editing remains available offline. When the backend is configured and the user is
-signed in, a Hono/PostgreSQL service becomes the cloud canonical store and
-Cloudflare R2 stores attachments. The frontend and backend are maintained in this
-monorepo.
+Mindleaf keeps notes in the browser with IndexedDB so editing continues offline.
+When configured and signed in, a Hono/PostgreSQL backend becomes the cloud
+canonical store and Cloudflare R2 stores attachments.
 
-## ✨ Current features
+## 🚀 The easiest deployment: one script
 
-- **Nested notes and folders** with expand/collapse, manual ordering, and drag-and-drop moves.
-- **Context-menu actions** on every tree row: add child note/folder, move up/down, rename, and delete.
-- **Bulk actions** for selected notes: add tags, move, export, and move to Trash.
-- **Rich-text editor** powered by TipTap: headings, lists, task lists, code, links, and resizable images.
-- **Wiki-links** such as `[[Note Title]]`, autocomplete, and a backlinks panel.
-- **Tags** with normalized tag values, tag chips, and multi-tag AND filtering.
-- **Search** with local fuzzy search and a PostgreSQL full-text-search endpoint for cloud operations.
-- **Sorting** by manual order, updated time, created time, or title, in ascending or descending direction.
-- **Saved views** that preserve the active tag filter and sort settings in the browser.
-- **Trash** with restore and automatic purge after 30 days.
-- **Themes**: Light, Dark, or System (follows the operating system preference).
-- **Backup and restore** using `.treenote` files; cloud export includes synced notes and attachment metadata when available, with local-cache fallback when the backend is unavailable.
-- **Offline-first sync** with a pending mutation queue, pagination, optimistic locking, conflict actions, remote-deletion recovery, and cross-tab coordination.
-- **Authentication** using an Argon2id password hash and an HttpOnly, HMAC-signed session cookie.
+For a **new Ubuntu VPS**, first prepare the DNS and firewall:
 
-## 🧱 Architecture
+- Point your domain's A/AAAA record to the VPS.
+- Allow inbound TCP ports 80 and 443.
+- Create two Cloudflare R2 buckets: `mindleaf-prod` for attachments and
+  `mindleaf-prod-backups` for database backups.
 
-### Frontend — `apps/web`
+Then run this one command as root:
 
-- React 19 + TypeScript + Vite 6
-- Tailwind CSS v4
-- TipTap 3
-- Zustand for UI preferences and local state
-- Dexie 4 for IndexedDB
-- Fuse.js for local fuzzy search
-- Vitest + Testing Library + fake IndexedDB for tests
+```bash
+curl -fsSL https://raw.githubusercontent.com/sinugrepo/mindleaf/main/scripts/setup.sh | sudo bash
+```
 
-The browser cache is the primary editing surface. Notes, attachments, pending
-mutations, and sync state are stored locally. UI preferences such as theme,
-sort, tag filters, and saved views are persisted with Zustand/localStorage.
+The script will:
 
-### Backend — `apps/server`
+1. Download the project.
+2. Ask for the public app URL and Cloudflare R2 credentials.
+3. Install Node.js, PostgreSQL, Caddy, rclone, and required packages.
+4. Create the protected `mindleaf` service account.
+5. Generate and store application/database secrets in `/opt/mindleaf/.env`.
+6. Configure PostgreSQL, backups, Caddy, and systemd.
+7. Build the backend and frontend.
+8. Generate the Caddy configuration from the domain you entered.
+9. Start the application and verify `/healthz`.
 
-- Hono 4 on Node.js 22
-- PostgreSQL 16 with Drizzle ORM
-- Argon2id password hashing
-- AES-256-GCM encryption for note content at rest
-- Cloudflare R2 or another S3-compatible store for attachments
-- Pino JSON logs sent to journald in production
+The script is safe to run again. It detects the existing installation and performs
+a normal release deployment instead of generating new secrets. Existing
+`/opt/mindleaf/.env` is never replaced automatically. The one-line installer
+keeps the checkout at `/opt/mindleaf-source`, so later updates can use the same
+script without cloning the project again.
 
-### Shared package — `packages/shared`
+### Deploy a new release
 
-Shared TypeScript DTOs and sync/backup contracts used by the frontend and
-backend.
+From the checkout created by the one-line installer:
 
-## 🚀 Local development
+```bash
+sudo bash /opt/mindleaf-source/scripts/setup.sh --pull
+```
 
-### Prerequisites
+If you cloned the repository somewhere else, run the same command from that
+checkout instead.
+
+Use `--pull` to fetch the latest fast-forwardable commit from `main`. Without it,
+the script deploys the checkout exactly as it is. To preview the deployment first:
+
+```bash
+sudo bash scripts/setup.sh --dry-run
+```
+
+### Move an existing installation to a new VPS
+
+Migration is different from a fresh install because encrypted notes require the
+original production secrets. Copy the old `.env` from a password manager or the
+old server, then run:
+
+```bash
+sudo bash scripts/setup.sh \
+  --mode migrate \
+  --env-file /root/mindleaf.env
+```
+
+This restores the latest database backup from R2. The original
+`MASTER_ENCRYPTION_KEY` must be supplied; without it, encrypted note content
+cannot be read. To provision without importing the R2 database (this does not delete an
+existing target database):
+
+```bash
+sudo bash scripts/setup.sh \
+  --mode migrate \
+  --env-file /root/mindleaf.env \
+  --no-restore
+```
+
+If DNS/TLS is not ready yet, add `--skip-public-check`. Keep the original backup
+and secret bundle until the new server has been verified.
+
+### What the one script selects automatically
+
+| Situation | Selected operation |
+| --- | --- |
+| `/opt/mindleaf/.env` does not exist and no `--env-file` is supplied | Fresh install |
+| `/opt/mindleaf/.env` already exists | Deploy current checkout |
+| `--mode migrate --env-file ...` is supplied | Data-preserving VPS migration |
+
+The public entrypoint is [`scripts/setup.sh`](./scripts/setup.sh). It delegates
+to the lower-level scripts that are still available for operators who need them.
+Most users do not need to call those internal scripts directly:
+
+- `deploy/scripts/bootstrap.sh` — low-level first-time VPS provisioning.
+- `scripts/deploy.sh` — release build, atomic staging, service restart, health check,
+  snapshots, and automatic rollback.
+- `scripts/migrate-vps.sh` — low-level data-preserving VPS migration.
+
+The default backup remote is `r2:mindleaf-prod-backups/db`; keep that backup
+bucket/path unless you also update the migration script's `RCLONE_REMOTE`.
+
+The one-line installer expects the default paths `/opt/mindleaf` and
+`/opt/mindleaf-source`; this keeps the service files, cron backup, and runtime
+paths consistent. The production service remains at `/opt/mindleaf`; do not
+move that directory without also updating the systemd and backup configuration.
+
+## 🖥️ Local development
+
+Local development does not need a VPS or Cloudflare account.
+
+### Requirements
 
 - Node.js 22 or newer
 - npm
-- Docker and Docker Compose for local PostgreSQL and MinIO
+- Docker and Docker Compose
 
-### 1. Install dependencies
+### Start local services
 
 ```bash
 npm install
-```
-
-### 2. Start local services
-
-```bash
 docker compose up -d
 ```
 
-This starts PostgreSQL on `localhost:5432` and MinIO on `localhost:9000`
-(with the MinIO console on `localhost:9001`).
+This starts PostgreSQL on `localhost:5432` and MinIO on `localhost:9000` (the
+MinIO console is on `localhost:9001`).
 
-### 3. Configure the backend
+Create the local backend configuration:
 
 ```bash
 cp apps/server/.env.example apps/server/.env
+openssl rand -base64 32   # replace SESSION_SECRET
+openssl rand -base64 32   # replace MASTER_ENCRYPTION_KEY
 ```
 
-Set values appropriate for local development. Generate the two cryptographic
-secrets rather than using the placeholders:
+For local development, the example file already contains development-only
+PostgreSQL/MinIO credentials. Do not reuse them in production.
 
-```bash
-openssl rand -base64 32   # SESSION_SECRET
-openssl rand -base64 32   # MASTER_ENCRYPTION_KEY
-```
-
-The web `.env.example` documents `VITE_API_URL`; in development, Vite proxies
-`/api` to `http://localhost:8787` by default, so an additional web env file is
-usually not needed.
-
-### 4. Create the schema and initial account
-
-The root package does not wrap workspace database commands. Run them explicitly:
+Create the database and initial account:
 
 ```bash
 npm --prefix apps/server run db:push
 npm --prefix apps/server run seed
 ```
 
-The seed command prompts for the initial master password. The application also
-supports the browser onboarding/setup flow for a new installation.
-
-### 5. Run the frontend and backend
-
-Run each process in its own terminal:
+Run the two applications in separate terminals:
 
 ```bash
-# Terminal 1 — backend
+# Terminal 1
 npm --prefix apps/server run dev
 
-# Terminal 2 — frontend
+# Terminal 2
 npm --prefix apps/web run dev
 ```
 
-Open <http://localhost:3000>. The Vite development server proxies `/api` calls
-to the backend on port `8787`, preserving cookie-based authentication.
+Open <http://localhost:3000>. Vite proxies `/api` to the backend on port `8787`.
 
-## 🧪 Validation and tests
+## ✨ Main features
 
-The frontend has the automated test suite. The server currently exposes test
-script placeholders and does not yet have a server integration-test suite.
-Recommended checks from the repository root are:
+- Nested notes and folders with expand/collapse, ordering, and drag-and-drop.
+- Context-menu actions, bulk actions, Trash, restore, and 30-day local purge.
+- Rich-text editor with headings, lists, tasks, code, links, images, and wiki-links.
+- Tags, multi-tag filtering, fuzzy search, and backlinks.
+- Sorting by manual order, updated time, created time, or title, ascending/descending.
+- Saved Views for restoring search, tag filters, and sort preferences.
+- Light, dark, and system themes.
+- `.treenote` backup/restore with cloud-export fallback to local cache.
+- Offline-first sync with queued mutations, pagination, conflicts, tombstones,
+  recovery state, and cross-tab coordination.
+- Argon2id authentication, HttpOnly signed sessions, and encrypted note content.
+
+## 🧱 Architecture
+
+| Area | Technology |
+| --- | --- |
+| Frontend | React 19, TypeScript, Vite 6, Tailwind CSS v4, TipTap 3 |
+| Local storage | Dexie 4 / IndexedDB |
+| State and search | Zustand / Fuse.js |
+| Backend | Hono 4 on Node.js 22 |
+| Database | PostgreSQL 16 with Drizzle ORM |
+| Attachments | Cloudflare R2 or another S3-compatible store |
+| Production process | Caddy + systemd + journald |
+
+The repository is organized as:
+
+```text
+apps/web/          React SPA, IndexedDB cache, sync client, tests
+apps/server/       Hono API, auth, notes, sync, backups, R2 integration
+packages/shared/   Shared DTOs and sync/backup contracts
+deploy/             Caddy, systemd, cron, bootstrap, backup assets
+scripts/            One-command setup, deployment, and migration entrypoints
+docs/               Detailed operational runbooks
+```
+
+## 🔐 Important safety rules
+
+- Never commit `.env`, `.pgpass`, rclone configuration, or production credentials.
+- Keep `MASTER_ENCRYPTION_KEY` in a password manager. It is required to decrypt
+  existing encrypted note content after restore or migration.
+- Never run fresh-install mode over an existing `/opt/mindleaf` installation.
+- The first install needs a domain already pointing to the VPS, ports 80/443
+  open, and two R2 buckets: `mindleaf-prod` for attachments and
+  `mindleaf-prod-backups` for database backups. Change `R2_BUCKET` or the
+  backup remote only in the production configuration if you use different names.
+- Keep a database backup before schema changes or migration.
+- `--no-restore` is for an empty/new database; it is not a replacement for a
+  data-preserving migration.
+- The deployment script keeps runtime snapshots and rolls back automatically when
+  the backend health check fails.
+
+## 🧪 Validation
+
+Run the frontend tests and builds from the repository root:
 
 ```bash
 npm --prefix apps/web run test:run
 npm --prefix apps/web run lint
+npm --prefix apps/web run build
 npm --prefix apps/server run lint
 npm --prefix apps/server run build
-npm --prefix apps/web run build
 git diff --check
 ```
 
-`lint` runs TypeScript with `--noEmit`; it is a typecheck rather than a stylistic
-linter. See [`docs/STABILITY-ROADMAP.md`](./docs/STABILITY-ROADMAP.md) for the
-remaining server integration-test and scale-fixture work.
+The server currently has script placeholders rather than a full integration-test
+suite. The remaining hardening work is tracked in
+[`docs/STABILITY-ROADMAP.md`](./docs/STABILITY-ROADMAP.md).
 
-## 🔄 Sync and recovery behavior
+## 🛠️ Useful operational commands
 
-When signed in, the sync engine pushes queued local mutations and pulls server
-deltas. The protocol uses a fixed server boundary, stable `(timestamp, id)`
-stream cursors, and bounded pages. A page accepts up to 500 records; the client
-continues through every page before advancing its local cursor.
+Most users only need `scripts/setup.sh`. A redeploy from an existing checkout
+runs as the normal VPS operator and requires the passwordless sudo rule created
+by the first-time bootstrap; do not run the service itself as root.
 
-Important safeguards:
-
-- Repeated offline edits to one note are coalesced in the local queue.
-- Two tabs coordinate queue draining with Web Locks and an IndexedDB lease fallback.
-- Permanent deletions are represented by server tombstones.
-- A remote `404` is treated as a remote-deletion recovery case rather than an
-  ordinary conflict that can be resolved with a useless request.
-- Tombstones are retained for 90 days by default (`TOMBSTONE_RETENTION_DAYS`).
-- If a device cursor is older than the retained deletion history, the server
-  returns `410` and the client persists a visible **Recovery required** state.
-  The client does **not** reset the cursor or delete local data automatically.
-  Preserve/export the local data and perform an explicit full-recovery procedure
-  before clearing that state.
-
-## 📦 Data and operational limits
-
-These limits protect the single-user VPS deployment from unbounded memory and
-storage work:
-
-| Area | Current limit |
-| --- | --- |
-| Individual attachment upload | 5 MB; MIME type and actual object size are verified |
-| Backup import file | 100 MB parsed-file limit, within a 150 MB request ceiling |
-| Notes in one backup import | 50,000 |
-| Attachments in one backup import | 50,000 |
-| Cloud export attachment budget | 150 MB total binary attachment data |
-| Sync page size | 250 by default, 500 maximum |
-| Backend search response | 50 ranked notes |
-| Search results rendered in the sidebar | 100 notes |
-| Trash retention | 30 days locally |
-| Sync tombstone retention | 90 days by default |
-
-Backup import currently commits work incrementally and does not yet provide
-resume/checkpoint support. For large or important restores, keep the original
-backup and verify the result before deleting the source copy.
-
-## ⌨️ Keyboard shortcuts
-
-| Shortcut | Action |
-| --- | --- |
-| `Ctrl` / `Cmd + N` | Create a new root note |
-| `Ctrl` / `Cmd + Shift + N` | Create a child note under the active note |
-| `Ctrl` / `Cmd + F` | Focus search |
-| `Delete` | Open delete confirmation for the active tree row |
-| `F2` | Open rename for the active tree row |
-| `Ctrl` / `Cmd + S` | No-op; changes are autosaved |
-
-When wiki-link autocomplete is open, `↑`, `↓`, `Enter`, and `Esc` are handled by
-the autocomplete popover.
-
-## 🛠️ Useful commands
-
-Run frontend commands with `npm --prefix apps/web ...` and backend commands with
-`npm --prefix apps/server ...`.
-
-| Command | Purpose |
-| --- | --- |
-| `npm --prefix apps/web run dev` | Start Vite on port 3000 |
-| `npm --prefix apps/server run dev` | Start Hono on port 8787 with watch mode |
-| `npm --prefix apps/web run build` | Build the production SPA |
-| `npm --prefix apps/server run build` | Compile the backend to `apps/server/dist` |
-| `npm --prefix apps/web run test:run` | Run the frontend tests once |
-| `npm --prefix apps/web run test` | Run frontend tests in watch mode |
-| `npm --prefix apps/web run lint` | Typecheck the frontend |
-| `npm --prefix apps/server run lint` | Typecheck the backend |
-| `npm --prefix apps/server run db:push` | Apply the current Drizzle schema |
-| `npm --prefix apps/server run db:generate` | Generate Drizzle migrations |
-| `npm --prefix apps/server run db:migrate` | Apply generated migrations |
-| `npm --prefix apps/server run db:studio` | Open Drizzle Studio |
-| `npm --prefix apps/server run seed` | Create/update the initial user |
-
-The root `package.json` still contains a small set of frontend-oriented Vite
-scripts. Use the workspace commands above for the full monorepo workflow.
-
-## 🚢 Production deployment
-
-Production uses a VPS-local release flow:
-
-- Caddy serves the built SPA and reverse-proxies `/api`.
-- The Hono backend runs as the `mindleaf` systemd service on `localhost:8787`.
-- PostgreSQL runs as a host service.
-- Cloudflare R2 stores attachments and database backups.
-- A daily cron job creates compressed PostgreSQL backups and applies retention.
-
-From an existing, provisioned VPS checkout, run:
 
 ```bash
-./scripts/deploy.sh
+sudo bash /opt/mindleaf-source/scripts/setup.sh --help
+sudo bash /opt/mindleaf-source/scripts/setup.sh --dry-run
+sudo bash /opt/mindleaf-source/scripts/setup.sh --pull
 ```
 
-The script builds the backend and frontend, stages the SPA, synchronizes the
-schema by default, installs/validates service configuration, restarts the
-backend, checks `http://localhost:8787/healthz`, and can roll back if health
-checks fail.
+After a fresh install, open the public HTTPS address in your browser and follow
+the setup/onboarding screen to create the first account. The local health check
+only proves that the backend is running; DNS, HTTPS, and R2 storage must also be
+ready for the complete application to work.
 
-Useful options:
+For detailed troubleshooting, backups, rollback, DNS/TLS, and VPS recovery, see:
 
-```bash
-./scripts/deploy.sh --dry-run       # show the plan without changing services
-./scripts/deploy.sh --no-migrate    # skip Drizzle schema synchronization
-./scripts/deploy.sh --rollback      # restore the newest runtime snapshot
-./scripts/deploy.sh --pull          # fetch/pull before deploying
-```
+- [`docs/DEPLOY.md`](./docs/DEPLOY.md)
+- [`docs/MIGRASI-VPS.md`](./docs/MIGRASI-VPS.md)
+- [`scripts/README-migrate-vps.txt`](./scripts/README-migrate-vps.txt)
 
-For first-time provisioning, VPS migration, Caddy, backups, rollback, and
-incident recovery, use [`docs/DEPLOY.md`](./docs/DEPLOY.md) and
-[`docs/MIGRASI-VPS.md`](./docs/MIGRASI-VPS.md). After a release, verify:
+Health check after deployment:
 
 ```bash
 curl --fail http://localhost:8787/healthz
@@ -266,40 +264,6 @@ Expected response:
 ```json
 {"ok":true}
 ```
-
-## 📁 Repository layout
-
-```text
-mindleaf-note/
-├── apps/
-│   ├── web/                 React/Vite frontend, IndexedDB, sync client, tests
-│   └── server/              Hono API, Drizzle schema, auth, sync, backup, R2
-├── packages/shared/         Shared DTOs and sync/backup types
-├── deploy/                  Caddy, systemd, cron, and VPS bootstrap assets
-├── scripts/                 Deployment and VPS migration entrypoints
-├── docs/                    Deployment and stability runbooks
-├── docker-compose.yml       Local PostgreSQL and MinIO
-└── package.json             npm workspace root
-```
-
-## 🧭 Stability roadmap
-
-Implemented hardening includes cursor-safe paginated sync, tombstones,
-coalesced mutations, cross-tab queue coordination, tree traversal guards,
-database indexes, bounded search rendering, upload verification, backup limits,
-and the persisted recovery-required gate.
-
-Still intentionally pending:
-
-- Explicit user-confirmed full-resync UX after cursor expiry.
-- Server integration tests for sync pagination, tombstone retention, and upload verification.
-- Indexed note-link tables and metadata-only queries for very large local datasets.
-- Scale fixtures and benchmarks for 1,000–50,000 notes.
-- Resumable/checkpointed backup import.
-- Attachment metadata/R2 reconciliation and orphan-object cleanup.
-- Quotas, automated restore drills, and multi-instance/distributed sync work.
-
-The detailed checklist is maintained in [`docs/STABILITY-ROADMAP.md`](./docs/STABILITY-ROADMAP.md).
 
 ## ⚖️ License
 

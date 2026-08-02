@@ -16,9 +16,10 @@
 #   - Apply: `sudo install -m 644 Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy`
 # =============================================================================
 
-# Match the production domain. Cloudflare DNS A record must point to
-# this VPS. The repository is configured for notes.sinug.my.id.
-notes.sinug.my.id {
+# The deployer replaces YOUR_DOMAIN with the hostname from ALLOWED_ORIGIN
+# before installing this file. Cloudflare DNS A/AAAA records must point to
+# this VPS before Caddy can obtain a certificate.
+__MINDLEAF_DOMAIN__ {
     # ------------------------------------------------------------------
     # Phase 10 — Global security headers.
     #
