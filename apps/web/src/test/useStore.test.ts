@@ -13,6 +13,7 @@ describe('useStore', () => {
       sortDirection: 'asc',
       tagFilter: [],
       savedViews: [],
+      activeSavedViewId: null,
       selectedNoteIds: [],
     });
   });
@@ -112,9 +113,18 @@ describe('useStore', () => {
       useStore.getState().applySavedView(saved.id);
       expect(useStore.getState().searchQuery).toBe('alpha');
       expect(useStore.getState().sortDirection).toBe('desc');
+      expect(useStore.getState().activeSavedViewId).toBe(saved.id);
 
       useStore.getState().deleteSavedView(saved.id);
       expect(useStore.getState().savedViews).toEqual([]);
+      expect(useStore.getState().activeSavedViewId).toBeNull();
+    });
+
+    it('clears the active view when its filter or sort is changed', () => {
+      useStore.getState().addSavedView('Current');
+      expect(useStore.getState().activeSavedViewId).not.toBeNull();
+      useStore.getState().setSortDirection('desc');
+      expect(useStore.getState().activeSavedViewId).toBeNull();
     });
 
     it('falls back to ascending for legacy views without sortDirection', () => {
@@ -127,6 +137,33 @@ describe('useStore', () => {
       useStore.getState().applySavedView('legacy');
       expect(useStore.getState().sortMode).toBe('title');
       expect(useStore.getState().sortDirection).toBe('asc');
+    });
+
+    it('rehydrates a valid active saved view and drops a stale id', async () => {
+      localStorage.setItem('treenote-storage', JSON.stringify({
+        version: 5,
+        state: {
+          theme: 'system',
+          activeNoteId: null,
+          sortMode: 'manual',
+          sortDirection: 'asc',
+          tagFilter: [],
+          savedViews: [{
+            id: 'persisted', name: 'Persisted', searchQuery: '', tagFilter: [],
+            sortMode: 'title', sortDirection: 'desc',
+          }],
+          activeSavedViewId: 'persisted',
+        },
+      }));
+      await useStore.persist.rehydrate();
+      expect(useStore.getState().activeSavedViewId).toBe('persisted');
+
+      localStorage.setItem('treenote-storage', JSON.stringify({
+        version: 4,
+        state: { savedViews: [], activeSavedViewId: 'missing' },
+      }));
+      await useStore.persist.rehydrate();
+      expect(useStore.getState().activeSavedViewId).toBeNull();
     });
   });
 

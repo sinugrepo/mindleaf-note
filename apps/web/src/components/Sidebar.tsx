@@ -274,7 +274,7 @@ export function Sidebar({ className, onClose, onLogout }: SidebarProps) {
           <TagFilterBar />
         </div>
       )}
-      <div className="px-3 py-1 shrink-0 flex items-center justify-end">
+      <div className="px-3 py-1 shrink-0 flex items-center justify-end border-b border-white/40 dark:border-white/5 sm:border-b-0">
         <SortDropdown visible={!searchQuery && !showTrash} />
       </div>
       {!searchQuery && !showTrash && <SavedViews />}
@@ -295,8 +295,8 @@ export function Sidebar({ className, onClose, onLogout }: SidebarProps) {
       </div>
 
       {/* Footer Settings */}
-      <div className="p-3 border-t border-white/60 dark:border-white/5 flex justify-between items-center text-zinc-500 dark:text-zinc-400 shrink-0">
-        <div className="flex gap-1 items-center">
+      <div className="p-3 border-t border-white/60 dark:border-white/5 flex flex-wrap gap-2 justify-between items-center text-zinc-500 dark:text-zinc-400 shrink-0">
+        <div className="flex min-w-0 gap-1 items-center">
           <SyncStatus />
           {onLogout && (
             <button
@@ -333,7 +333,7 @@ export function Sidebar({ className, onClose, onLogout }: SidebarProps) {
           </label>
         </div>
 
-        <div className="flex bg-zinc-200/50 dark:bg-zinc-800/50 rounded p-0.5">
+        <div className="ml-auto flex shrink-0 bg-zinc-200/50 dark:bg-zinc-800/50 rounded p-0.5">
           <ThemeButton
             current={theme}
             theme="light"

@@ -66,8 +66,19 @@
     cursor: pointer;
   }
 
+  .prose {
+    overflow-wrap: anywhere;
+  }
+
+  .prose pre {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
   .prose img {
     @apply rounded-md shadow-sm border border-zinc-200 dark:border-white/10;
+    max-width: 100%;
+    height: auto;
     max-height: 500px;
     object-fit: contain;
   }

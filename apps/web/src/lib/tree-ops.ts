@@ -268,6 +268,7 @@ export interface FlatTreeItem {
 export function flattenTree(
   notes: Note[],
   rootOrder?: readonly string[],
+  siblingComparator?: (a: Note, b: Note) => number,
 ): FlatTreeItem[] {
   // Single pass to bucket notes by parentId. parentId comes back as
   // `null` for root notes; Dexie never writes `undefined` for nullable
@@ -293,7 +294,7 @@ export function flattenTree(
           (rootIndex.get(b.id) ?? Number.MAX_SAFE_INTEGER),
       );
     } else {
-      bucket.sort((a, b) => a.order - b.order);
+      bucket.sort(siblingComparator ?? ((a, b) => a.order - b.order));
     }
   }
 

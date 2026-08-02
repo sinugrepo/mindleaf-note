@@ -20,6 +20,7 @@ import {
 } from '../lib/tree-ops';
 import {
   filterActiveNotesByTagSet,
+  ROOT_SORT_COMPARATORS,
   sortRootNotes,
 } from '../lib/tags';
 import { useFocusTrap } from '../hooks/useFocusTrap';
@@ -141,9 +142,20 @@ export function TreeView({ disableVirtualization: dvProp }: TreeViewProps = {}) 
   // even appear in the flat list — the DFS prunes them). Pass the
   // already-sorted notes so the DFS preserves the root ordering
   // applied above.
+  const siblingComparator = useMemo(() => {
+    const multiplier = sortDirection === 'asc' ? 1 : -1;
+    const compare = ROOT_SORT_COMPARATORS[sortMode];
+    return (a: Note, b: Note) => {
+      const primary = multiplier * compare(a, b);
+      // Keep ties deterministic and preserve the manual order as a stable
+      // fallback (for example, two notes with the same updated timestamp).
+      return primary || a.order - b.order;
+    };
+  }, [sortMode, sortDirection]);
+
   const flatNotes = useMemo(
-    () => flattenTree(sortedNotes, sortedRoots.map((note) => note.id)),
-    [sortedNotes, sortedRoots],
+    () => flattenTree(sortedNotes, sortedRoots.map((note) => note.id), siblingComparator),
+    [sortedNotes, sortedRoots, siblingComparator],
   );
 
   // O(N log N) batch pre-computation of move-up / move-down support for
