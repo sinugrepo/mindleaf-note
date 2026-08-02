@@ -1,225 +1,311 @@
 # Mindleaf 🍃
 
-> A tree-based outliner and note-taking app — your mind's digital garden.
-> **Local-first** IndexedDB cache + optional **cloud backend** (Postgres + R2).
+> A local-first tree outliner and note-taking app for growing a digital garden.
 
-Mindleaf started as a 100% local single-page React app. It is now being
-migrated to a **hybrid offline-first** architecture: a Hono + Postgres +
-Cloudflare R2 backend provides sync, search, and encryption, while
-IndexedDB remains the **primary local cache** so the app works fully
-offline. See [`CLOUD_MIGRATION_PLAN.md`](./CLOUD_MIGRATION_PLAN.md) for
-the full migration plan and progress tracker.
+Mindleaf stores the working copy of your notes in the browser with IndexedDB, so
+editing remains available offline. When the backend is configured and the user is
+signed in, a Hono/PostgreSQL service becomes the cloud canonical store and
+Cloudflare R2 stores attachments. The frontend and backend are maintained in this
+monorepo.
 
-## ✨ Features
+## ✨ Current features
 
-- **Tree-structured notes** with nested folders and manual ordering
-- **Rich-text editor** (TipTap) — headings, lists, tasks, code, links, **resizable images**
-- **Wiki-links** — `[[Note Title]]` with autocomplete and a live **backlinks panel**
-- **Tags** — multi-tag chips with AND-filtering from the sidebar
-- **Fuzzy search** (Fuse.js) with keyboard-shortcut focus
-- **Sort modes** — Manual, Updated, Created, Title
-- **Trash** with restore and auto-purge after 30 days
-- **Themes** — Light, Dark, or follow-system
-- **Export / Import** — single `.treenote` backup (notes + attachments, base64 images)
-- **Cloud sync** *(in progress)* — AES-256-GCM server-side encryption, presigned R2 image uploads
+- **Nested notes and folders** with expand/collapse, manual ordering, and drag-and-drop moves.
+- **Context-menu actions** on every tree row: add child note/folder, move up/down, rename, and delete.
+- **Bulk actions** for selected notes: add tags, move, export, and move to Trash.
+- **Rich-text editor** powered by TipTap: headings, lists, task lists, code, links, and resizable images.
+- **Wiki-links** such as `[[Note Title]]`, autocomplete, and a backlinks panel.
+- **Tags** with normalized tag values, tag chips, and multi-tag AND filtering.
+- **Search** with local fuzzy search and a PostgreSQL full-text-search endpoint for cloud operations.
+- **Sorting** by manual order, updated time, created time, or title, in ascending or descending direction.
+- **Saved views** that preserve the active tag filter and sort settings in the browser.
+- **Trash** with restore and automatic purge after 30 days.
+- **Themes**: Light, Dark, or System (follows the operating system preference).
+- **Backup and restore** using `.treenote` files; cloud export includes synced notes and attachment metadata when available, with local-cache fallback when the backend is unavailable.
+- **Offline-first sync** with a pending mutation queue, pagination, optimistic locking, conflict actions, remote-deletion recovery, and cross-tab coordination.
+- **Authentication** using an Argon2id password hash and an HttpOnly, HMAC-signed session cookie.
 
-## 🧰 Tech Stack
+## 🧱 Architecture
 
-### Frontend (`apps/web`)
+### Frontend — `apps/web`
 
-**React 19** + **TypeScript** · **Vite 6** · **Tailwind CSS v4** · **TipTap 3**
-**Zustand** · **Dexie 4** (IndexedDB) · **Fuse.js** · **lucide-react** · **motion**
-Vitest + jsdom + fake-indexeddb
+- React 19 + TypeScript + Vite 6
+- Tailwind CSS v4
+- TipTap 3
+- Zustand for UI preferences and local state
+- Dexie 4 for IndexedDB
+- Fuse.js for local fuzzy search
+- Vitest + Testing Library + fake IndexedDB for tests
 
-### Backend (`apps/server`) — *new*
+The browser cache is the primary editing surface. Notes, attachments, pending
+mutations, and sync state are stored locally. UI preferences such as theme,
+sort, tag filters, and saved views are persisted with Zustand/localStorage.
 
-**Hono 4** + **Node.js 22** · **Drizzle ORM** + **PostgreSQL 16** · **@node-rs/argon2**
-**AES-256-GCM** (Node `crypto`) · **@aws-sdk/client-s3** (Cloudflare R2 / MinIO)
-Docker Compose for local dev (Postgres + MinIO)
+### Backend — `apps/server`
 
-### Shared (`packages/shared`)
+- Hono 4 on Node.js 22
+- PostgreSQL 16 with Drizzle ORM
+- Argon2id password hashing
+- AES-256-GCM encryption for note content at rest
+- Cloudflare R2 or another S3-compatible store for attachments
+- Pino JSON logs sent to journald in production
 
-TypeScript types shared between backend (Drizzle result typing) and frontend
-(API hook typing) — `NoteDTO`, `AttachmentDTO`, `SyncSnapshot`, etc.
+### Shared package — `packages/shared`
 
-## 🚀 Getting Started
+Shared TypeScript DTOs and sync/backup contracts used by the frontend and
+backend.
+
+## 🚀 Local development
 
 ### Prerequisites
 
-- **Node.js** ≥ 22
-- **Docker** + **Docker Compose** (for local Postgres + MinIO)
+- Node.js 22 or newer
+- npm
+- Docker and Docker Compose for local PostgreSQL and MinIO
 
 ### 1. Install dependencies
 
 ```bash
-npm install          # installs all workspace packages
+npm install
 ```
 
-### 2. Start local infrastructure
+### 2. Start local services
 
 ```bash
-docker compose up -d # PostgreSQL on :5432, MinIO on :9000 (console :9001)
+docker compose up -d
 ```
 
-### 3. Configure backend secrets
+This starts PostgreSQL on `localhost:5432` and MinIO on `localhost:9000`
+(with the MinIO console on `localhost:9001`).
+
+### 3. Configure the backend
 
 ```bash
 cp apps/server/.env.example apps/server/.env
-
-# Generate the two required secrets:
-openssl rand -base64 32  # → paste into SESSION_SECRET
-openssl rand -base64 32  # → paste into MASTER_ENCRYPTION_KEY
 ```
 
-### 4. Push database schema & create your account
+Set values appropriate for local development. Generate the two cryptographic
+secrets rather than using the placeholders:
 
 ```bash
-npm run db:push       # Drizzle Kit syncs schema → Postgres
-npm run seed          # prompts for your master password (min 8 chars)
+openssl rand -base64 32   # SESSION_SECRET
+openssl rand -base64 32   # MASTER_ENCRYPTION_KEY
 ```
 
-### 5. Run the app (frontend + backend)
+The web `.env.example` documents `VITE_API_URL`; in development, Vite proxies
+`/api` to `http://localhost:8787` by default, so an additional web env file is
+usually not needed.
+
+### 4. Create the schema and initial account
+
+The root package does not wrap workspace database commands. Run them explicitly:
 
 ```bash
-npm run dev           # starts both apps/web (Vite :3000) + apps/server (Hono :8787)
+npm --prefix apps/server run db:push
+npm --prefix apps/server run seed
 ```
 
-Or run them separately:
+The seed command prompts for the initial master password. The application also
+supports the browser onboarding/setup flow for a new installation.
+
+### 5. Run the frontend and backend
+
+Run each process in its own terminal:
 
 ```bash
-npm run dev:web       # Vite on http://localhost:3000 (proxies /api → :8787)
-npm run dev:server    # Hono backend on http://localhost:8787 (tsx --watch)
+# Terminal 1 — backend
+npm --prefix apps/server run dev
+
+# Terminal 2 — frontend
+npm --prefix apps/web run dev
 ```
 
-Open **http://localhost:3000** — the app talks to the backend via Vite's
-`/api` proxy (so HttpOnly cookies work seamlessly in dev).
+Open <http://localhost:3000>. The Vite development server proxies `/api` calls
+to the backend on port `8787`, preserving cookie-based authentication.
 
-### Scripts
+## 🧪 Validation and tests
 
-Run from the **repo root** (delegates to workspaces):
+The frontend has the automated test suite. The server currently exposes test
+script placeholders and does not yet have a server integration-test suite.
+Recommended checks from the repository root are:
 
-| Script | Purpose |
+```bash
+npm --prefix apps/web run test:run
+npm --prefix apps/web run lint
+npm --prefix apps/server run lint
+npm --prefix apps/server run build
+npm --prefix apps/web run build
+git diff --check
+```
+
+`lint` runs TypeScript with `--noEmit`; it is a typecheck rather than a stylistic
+linter. See [`docs/STABILITY-ROADMAP.md`](./docs/STABILITY-ROADMAP.md) for the
+remaining server integration-test and scale-fixture work.
+
+## 🔄 Sync and recovery behavior
+
+When signed in, the sync engine pushes queued local mutations and pulls server
+deltas. The protocol uses a fixed server boundary, stable `(timestamp, id)`
+stream cursors, and bounded pages. A page accepts up to 500 records; the client
+continues through every page before advancing its local cursor.
+
+Important safeguards:
+
+- Repeated offline edits to one note are coalesced in the local queue.
+- Two tabs coordinate queue draining with Web Locks and an IndexedDB lease fallback.
+- Permanent deletions are represented by server tombstones.
+- A remote `404` is treated as a remote-deletion recovery case rather than an
+  ordinary conflict that can be resolved with a useless request.
+- Tombstones are retained for 90 days by default (`TOMBSTONE_RETENTION_DAYS`).
+- If a device cursor is older than the retained deletion history, the server
+  returns `410` and the client persists a visible **Recovery required** state.
+  The client does **not** reset the cursor or delete local data automatically.
+  Preserve/export the local data and perform an explicit full-recovery procedure
+  before clearing that state.
+
+## 📦 Data and operational limits
+
+These limits protect the single-user VPS deployment from unbounded memory and
+storage work:
+
+| Area | Current limit |
 | --- | --- |
-| `npm run dev` | Start frontend + backend concurrently |
-| `npm run dev:web` | Frontend only (Vite :3000) |
-| `npm run dev:server` | Backend only (Hono :8787, hot reload) |
-| `npm run build` | Production build (web → `apps/web/dist`, server → `apps/server/dist`) |
-| `npm run lint` | TypeScript type-check (`tsc --noEmit`) for all workspaces |
-| `npm run test` | Vitest (watch mode, frontend) |
-| `npm run test:run` | Vitest single run (frontend) |
-| `npm run clean` | Remove all `dist/` directories |
-| `npm run db:push` | Drizzle Kit: sync schema → Postgres |
-| `npm run db:studio` | Drizzle Studio: visual DB browser |
-| `npm run seed` | Create/update the single user with a master password |
+| Individual attachment upload | 5 MB; MIME type and actual object size are verified |
+| Backup import file | 100 MB parsed-file limit, within a 150 MB request ceiling |
+| Notes in one backup import | 50,000 |
+| Attachments in one backup import | 50,000 |
+| Cloud export attachment budget | 150 MB total binary attachment data |
+| Sync page size | 250 by default, 500 maximum |
+| Backend search response | 50 ranked notes |
+| Search results rendered in the sidebar | 100 notes |
+| Trash retention | 30 days locally |
+| Sync tombstone retention | 90 days by default |
 
-Backend-only scripts (run via `npm run <script> --workspace=apps/server`):
+Backup import currently commits work incrementally and does not yet provide
+resume/checkpoint support. For large or important restores, keep the original
+backup and verify the result before deleting the source copy.
 
-| Script | Purpose |
-| --- | --- |
-| `db:generate` | Generate SQL migration files from schema changes |
-| `db:migrate` | Apply generated migrations |
-| `start` | Run compiled backend (`node dist/index.js`) |
-
-## ⌨️ Shortcuts
+## ⌨️ Keyboard shortcuts
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl` / `Cmd + N` | New root note |
-| `Ctrl` / `Cmd + Shift + N` | New child note under active note |
+| `Ctrl` / `Cmd + N` | Create a new root note |
+| `Ctrl` / `Cmd + Shift + N` | Create a child note under the active note |
 | `Ctrl` / `Cmd + F` | Focus search |
-| `Ctrl` / `Cmd + S` | Suppressed — autosave handles persistence |
+| `Delete` | Open delete confirmation for the active tree row |
+| `F2` | Open rename for the active tree row |
+| `Ctrl` / `Cmd + S` | No-op; changes are autosaved |
 
-The `[[` autocomplete popover intercepts `↑` / `↓`, `Enter`, and `Esc` while open.
+When wiki-link autocomplete is open, `↑`, `↓`, `Enter`, and `Esc` are handled by
+the autocomplete popover.
 
-## 📁 Project Layout
+## 🛠️ Useful commands
 
+Run frontend commands with `npm --prefix apps/web ...` and backend commands with
+`npm --prefix apps/server ...`.
+
+| Command | Purpose |
+| --- | --- |
+| `npm --prefix apps/web run dev` | Start Vite on port 3000 |
+| `npm --prefix apps/server run dev` | Start Hono on port 8787 with watch mode |
+| `npm --prefix apps/web run build` | Build the production SPA |
+| `npm --prefix apps/server run build` | Compile the backend to `apps/server/dist` |
+| `npm --prefix apps/web run test:run` | Run the frontend tests once |
+| `npm --prefix apps/web run test` | Run frontend tests in watch mode |
+| `npm --prefix apps/web run lint` | Typecheck the frontend |
+| `npm --prefix apps/server run lint` | Typecheck the backend |
+| `npm --prefix apps/server run db:push` | Apply the current Drizzle schema |
+| `npm --prefix apps/server run db:generate` | Generate Drizzle migrations |
+| `npm --prefix apps/server run db:migrate` | Apply generated migrations |
+| `npm --prefix apps/server run db:studio` | Open Drizzle Studio |
+| `npm --prefix apps/server run seed` | Create/update the initial user |
+
+The root `package.json` still contains a small set of frontend-oriented Vite
+scripts. Use the workspace commands above for the full monorepo workflow.
+
+## 🚢 Production deployment
+
+Production uses a VPS-local release flow:
+
+- Caddy serves the built SPA and reverse-proxies `/api`.
+- The Hono backend runs as the `mindleaf` systemd service on `localhost:8787`.
+- PostgreSQL runs as a host service.
+- Cloudflare R2 stores attachments and database backups.
+- A daily cron job creates compressed PostgreSQL backups and applies retention.
+
+From an existing, provisioned VPS checkout, run:
+
+```bash
+./scripts/deploy.sh
 ```
-mindleaf/
+
+The script builds the backend and frontend, stages the SPA, synchronizes the
+schema by default, installs/validates service configuration, restarts the
+backend, checks `http://localhost:8787/healthz`, and can roll back if health
+checks fail.
+
+Useful options:
+
+```bash
+./scripts/deploy.sh --dry-run       # show the plan without changing services
+./scripts/deploy.sh --no-migrate    # skip Drizzle schema synchronization
+./scripts/deploy.sh --rollback      # restore the newest runtime snapshot
+./scripts/deploy.sh --pull          # fetch/pull before deploying
+```
+
+For first-time provisioning, VPS migration, Caddy, backups, rollback, and
+incident recovery, use [`docs/DEPLOY.md`](./docs/DEPLOY.md) and
+[`docs/MIGRASI-VPS.md`](./docs/MIGRASI-VPS.md). After a release, verify:
+
+```bash
+curl --fail http://localhost:8787/healthz
+```
+
+Expected response:
+
+```json
+{"ok":true}
+```
+
+## 📁 Repository layout
+
+```text
+mindleaf-note/
 ├── apps/
-│   ├── web/                      # Frontend (React + Vite + TipTap)
-│   │   ├── src/
-│   │   │   ├── components/       # Layout, Sidebar, TreeView, Editor, …
-│   │   │   ├── extensions/       # TipTap: ResizableImage, WikiLink
-│   │   │   ├── hooks/            # useResizablePanel, useGlobalKeyboardShortcuts, …
-│   │   │   ├── lib/              # Pure logic — notes, tree-ops, wikilink, tags, …
-│   │   │   ├── api/              # Fetch-based API client for backend (auth, notes, sync)
-│   │   │   ├── sync/             # Offline-first sync engine (queue, drainer, pull, push, conflict)
-│   │   │   ├── db/db.ts          # Dexie schema + migrations + GC (v1 → v5)
-│   │   │   ├── store/            # Zustand store (theme, sort, filter, active note)
-│   │   │   └── test/             # Vitest setup (jsdom + fake-indexeddb)
-│   │   ├── vite.config.ts        # Vite + /api proxy → backend :8787
-│   │   └── vitest.config.ts
-│   └── server/                   # Backend (Hono + Drizzle + Postgres) — NEW
-│       ├── src/
-│       │   ├── index.ts          # Hono entry, route mounting, /healthz
-│       │   ├── env.ts            # AppEnv type (Hono Variables)
-│       │   ├── crypto.ts         # AES-256-GCM encrypt/decrypt
-│       │   ├── r2.ts             # S3 client (R2/MinIO) + presigned URL helpers
-│       │   ├── db/
-│       │   │   ├── schema.ts     # Drizzle schema: users, sessions, notes, attachments
-│       │   │   └── index.ts      # postgres-js + Drizzle instance
-│       │   ├── routes/
-│       │   │   ├── auth.ts       # POST /login, /logout, /setup (Argon2id)
-│       │   │   ├── notes.ts      # CRUD + recursive CTE + optimistic locking
-│       │   │   ├── upload.ts     # Presigned PUT/GET for R2 image uploads
-│       │   │   ├── search.ts     # ILIKE title search (FTS deferred to Phase 6)
-│       │   │   └── sync.ts       # Delta sync snapshot endpoint
-│       │   ├── middleware/
-│       │   │   ├── auth.ts       # Session middleware (HMAC cookie, rolling expiry)
-│       │   │   └── ratelimit.ts  # In-memory token-bucket rate limiter
-│       │   └── seed.ts           # User creation script
-│       ├── drizzle.config.ts
-│       └── .env.example
-├── packages/
-│   └── shared/                   # Shared TypeScript types (NoteDTO, SyncSnapshot, …)
-│       └── src/index.ts
-├── docker-compose.yml            # PostgreSQL 16 + MinIO for local dev
-├── CLOUD_MIGRATION_PLAN.md       # Full migration plan + progress tracker
-└── package.json                  # npm workspaces root
+│   ├── web/                 React/Vite frontend, IndexedDB, sync client, tests
+│   └── server/              Hono API, Drizzle schema, auth, sync, backup, R2
+├── packages/shared/         Shared DTOs and sync/backup types
+├── deploy/                  Caddy, systemd, cron, and VPS bootstrap assets
+├── scripts/                 Deployment and VPS migration entrypoints
+├── docs/                    Deployment and stability runbooks
+├── docker-compose.yml       Local PostgreSQL and MinIO
+└── package.json             npm workspace root
 ```
 
-## 💾 Data & Architecture
+## 🧭 Stability roadmap
 
-### Frontend (IndexedDB — local cache)
+Implemented hardening includes cursor-safe paginated sync, tombstones,
+coalesced mutations, cross-tab queue coordination, tree traversal guards,
+database indexes, bounded search rendering, upload verification, backup limits,
+and the persisted recovery-required gate.
 
-- **Notes & attachments** → IndexedDB via Dexie (`apps/web/src/db/db.ts`, schema versions `v1 → v5` with in-place migrations; v5 adds `sync_state` + `pending_mutations` tables and sync fields on notes/attachments).
-- **UI prefs** (theme, sort, filter, active note) → `localStorage` via Zustand `persist`.
-- On every launch: `gcAttachments()` drops orphaned attachments; `purgeOldTrash()` hard-deletes items soft-deleted > 30 days ago.
-- Wiki-links are stored as `<span data-wikilink-id="…">` so the DB stays the source of truth for navigation.
-- Tags are normalized to **lowercase kebab-case** (helper functions in `src/lib/tags.ts`, pure/sync for testability).
-- Dropping the indexed `notes.content` field in `v2` was deliberate — IndexedDB enforces a per-key size limit that broke image-bearing saves.
+Still intentionally pending:
 
-### Backend (Postgres + R2 — cloud canonical source)
+- Explicit user-confirmed full-resync UX after cursor expiry.
+- Server integration tests for sync pagination, tombstone retention, and upload verification.
+- Indexed note-link tables and metadata-only queries for very large local datasets.
+- Scale fixtures and benchmarks for 1,000–50,000 notes.
+- Resumable/checkpointed backup import.
+- Attachment metadata/R2 reconciliation and orphan-object cleanup.
+- Quotas, automated restore drills, and multi-instance/distributed sync work.
 
-- **Auth**: Argon2id password hash, HMAC-signed HttpOnly session cookie (SameSite=Strict), rolling 30-day expiry, in-memory rate limiter.
-- **Encryption**: Note content is AES-256-GCM encrypted server-side (`content_ct` + `content_nonce` columns). Title stays plaintext for fast tree rendering and ILIKE search.
-- **Images**: Browser uploads directly to Cloudflare R2 via presigned PUT URL (bypasses backend → saves VPS bandwidth). Presigned GET URLs (10-min TTL) for rendering.
-- **Sync**: `GET /api/sync/snapshot?since=<epoch_ms>` returns delta of notes + attachments. Client applies notes with higher `version` than local cache.
-- **Optimistic locking**: `PATCH /api/notes/:id` with `If-Match: <version>` header → 409 Conflict on stale version.
-- **Tree**: `parent_id` with recursive CTE (`WITH RECURSIVE descendants`) for subtree operations.
-
-> 📋 See [`CLOUD_MIGRATION_PLAN.md`](./CLOUD_MIGRATION_PLAN.md) for the full 10-phase migration plan, security threat model, sync architecture, and progress tracker.
-
-## 🌡️ Cloud Migration Progress
-
-| Phase | Status | What |
-|:---:|:---:|:---|
-| 0 | ☑ Done | Monorepo restructure (`apps/{web,server}` + `packages/shared`) |
-| 1 | ☑ Done | Backend skeleton (Hono + Drizzle + Docker Compose) |
-| 2 | ☑ Done | Auth (Argon2id + HttpOnly cookie + rate-limit) |
-| 3 | ☑ Done | Notes CRUD + AES-256-GCM encryption |
-| 4 | ☑ Done | Image presigned R2 uploads |
-| 5 | ☑ Done | Offline-first sync layer (Dexie v5 + drainer + conflict UX) 🔥 |
-| 6 | ☑ Done | Postgres `tsvector` FTS (websearch_to_tsquery + ts_rank + GIN index) |
-| 7 | ☑ Done | Backend Export/Import (`.treenote` v2 + R2 presigned PUT URLs) |
-| 8 | ☑ Done | Onboarding Wizard (IndexedDB → cloud, re-entrant, App.tsx-gated) |
-| 9 | ☑ Done | Production Prep (`Dockerfile`, `Caddyfile`, systemd unit, backup cron, `deploy.sh`) |
-| 10 | ☑ Done | Hardening (`pino` JSON logs + cookie/auth redaction, `hono/body-limit` 5/150/1 MB tiered, strict CSP at Caddy, privacy-preserving observability via journald only) |
+The detailed checklist is maintained in [`docs/STABILITY-ROADMAP.md`](./docs/STABILITY-ROADMAP.md).
 
 ## ⚖️ License
 
-No `LICENSE` file is checked in. Treat the source as **all-rights-reserved** by the author
-until a license file is added. Please open an issue before forking or redistributing.
+No `LICENSE` file is checked in. Treat the source as all-rights-reserved by the
+author until a license file is added. Please open an issue before forking or
+redistributing.
 
 ---
 
