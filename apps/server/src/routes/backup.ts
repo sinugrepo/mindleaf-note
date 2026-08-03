@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { db } from '../db/index.js';
 import { notes, attachments, tombstones } from '../db/schema.js';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { encrypt, decrypt } from '../crypto.js';
 import { htmlToPlaintext } from '../html-to-text.js';
 import {
@@ -21,6 +21,7 @@ import type {
   BackupImportResponse,
   NoteDTO,
 } from '@mindleaf/shared';
+import { isAllowedUploadMime, uuidSchema } from '../lib/upload-validation.js';
 import type { AppEnv } from '../env.js';
 
 export const backupRoutes = new Hono<AppEnv>();
@@ -337,9 +338,13 @@ backupRoutes.post(
     }
     const noteIds = new Set<string>();
     for (const raw of rawNotes) {
-      if (!raw || typeof raw !== 'object') continue;
+      if (!raw || typeof raw !== 'object') {
+        return c.json({ error: 'Backup contains an invalid note record' }, 400);
+      }
       const candidate = raw as { id?: unknown };
-      if (typeof candidate.id !== 'string') continue;
+      if (typeof candidate.id !== 'string' || !uuidSchema.safeParse(candidate.id).success) {
+        return c.json({ error: 'Backup contains a note with an invalid id' }, 400);
+      }
       if (noteIds.has(candidate.id)) {
         return c.json(
           { error: `Duplicate note id in backup: ${candidate.id}` },
@@ -350,9 +355,20 @@ backupRoutes.post(
     }
     const attachmentIds = new Set<string>();
     for (const raw of rawAttachments) {
-      if (!raw || typeof raw !== 'object') continue;
-      const candidate = raw as { id?: unknown };
-      if (typeof candidate.id !== 'string') continue;
+      if (!raw || typeof raw !== 'object') {
+        return c.json({ error: 'Backup contains an invalid attachment record' }, 400);
+      }
+      const candidate = raw as { id?: unknown; noteId?: unknown; mime?: unknown };
+      if (
+        typeof candidate.id !== 'string' ||
+        !uuidSchema.safeParse(candidate.id).success ||
+        typeof candidate.noteId !== 'string' ||
+        !uuidSchema.safeParse(candidate.noteId).success ||
+        typeof candidate.mime !== 'string' ||
+        !isAllowedUploadMime(candidate.mime)
+      ) {
+        return c.json({ error: 'Backup contains invalid attachment metadata' }, 400);
+      }
       if (attachmentIds.has(candidate.id)) {
         return c.json(
           { error: `Duplicate attachment id in backup: ${candidate.id}` },
@@ -361,13 +377,35 @@ backupRoutes.post(
       }
       attachmentIds.add(candidate.id);
     }
-    // Reject attachment ID ownership conflicts before changing any notes.
-    // Silently skipping one would produce a successful-looking backup with
-    // missing images and could leave the local cache pointing at nothing.
+    // Reject invalid attachment metadata, missing note references, and
+    // ownership conflicts before changing any notes. This keeps a malformed
+    // backup from producing a partially imported database state.
+    const referencedNoteIds = new Set(
+      rawAttachments.map((raw) => (raw as { noteId: string }).noteId),
+    );
+    const existingNoteIds = referencedNoteIds.size > 0
+      ? await db
+        .select({ id: notes.id })
+        .from(notes)
+        .where(inArray(notes.id, Array.from(referencedNoteIds)))
+      : [];
+    const knownNoteIds = new Set([
+      ...noteIds,
+      ...existingNoteIds.map((row) => row.id),
+    ]);
+    for (const noteId of referencedNoteIds) {
+      if (!knownNoteIds.has(noteId)) {
+        return c.json({ error: `Attachment references a missing note: ${noteId}` }, 400);
+      }
+    }
     for (const raw of rawAttachments) {
-      if (!raw || typeof raw !== 'object') continue;
-      const candidate = raw as { id?: unknown; noteId?: unknown };
-      if (typeof candidate.id !== 'string' || typeof candidate.noteId !== 'string') continue;
+      if (!raw || typeof raw !== 'object') {
+        return c.json({ error: 'Backup contains an invalid attachment record' }, 400);
+      }
+      const candidate = raw as { id?: unknown; noteId?: unknown; mime?: unknown };
+      if (typeof candidate.id !== 'string' || typeof candidate.noteId !== 'string') {
+        return c.json({ error: 'Backup contains invalid attachment ownership' }, 400);
+      }
       const existing = await db
         .select({ noteId: attachments.noteId })
         .from(attachments)
@@ -577,7 +615,7 @@ backupRoutes.post(
       }
       if (!created.created) continue;
 
-      const uploadUrl = await presignPut(r2Key);
+      const uploadUrl = await presignPut(r2Key, a.mime);
       uploads.push({ attachmentId, uploadUrl, r2Key });
       attachmentsCreated += 1;
     }

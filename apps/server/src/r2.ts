@@ -67,9 +67,13 @@ export function generateR2Key(userId: string, mime: string): string {
 /**
  * Create a presigned PUT URL for direct browser-to-R2 upload.
  */
-export async function presignPut(r2Key: string): Promise<string> {
+export async function presignPut(r2Key: string, mime: string): Promise<string> {
   if (!s3Client) throw new Error('R2 client not configured');
-  const command = new PutObjectCommand({ Bucket: R2_BUCKET, Key: r2Key });
+  const command = new PutObjectCommand({
+    Bucket: R2_BUCKET,
+    Key: r2Key,
+    ContentType: mime,
+  });
   return getSignedUrl(s3Client, command, { expiresIn: PUT_TTL_SEC });
 }
 
@@ -112,7 +116,6 @@ function mimeToExtension(mime: string): string {
     'image/jpeg': 'jpg',
     'image/gif': 'gif',
     'image/webp': 'webp',
-    'image/svg+xml': 'svg',
     'image/avif': 'avif',
   };
   return map[mime] ?? 'bin';
