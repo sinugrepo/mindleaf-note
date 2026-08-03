@@ -12,6 +12,9 @@ import { stdin, stdout } from 'node:process';
  *   npm run seed                    # prompts for password
  *   MINDLEAF_SEED_PASSWORD=xxx npm run seed  # non-interactive (CI)
  *
+ * The seed command is the only initial-account creation path. The HTTP API
+ * intentionally does not expose a public setup endpoint.
+ *
  * If a user already exists, the script exits with an error unless
  * --reset is passed (which re-hashes the password).
  */

@@ -81,3 +81,78 @@ These are intentionally not part of the first stability pass because they requir
 - [ ] Take/verify a database backup before production schema changes.
 - [ ] Deploy and verify `/healthz`, login, note create/edit, sync, attachment upload, trash restore, and backup export.
 - [ ] Record the commit, validation output, and any known warnings.
+
+## Future-proof hardening audit (2026-08-03)
+
+This section records the follow-up security and operational audit. Items remain
+unchecked until the corresponding implementation and validation are complete.
+The focused P0 regression tests are not a substitute for full PostgreSQL-backed
+route integration tests; that broader work remains explicitly tracked below.
+The priorities assume the current single-user VPS deployment; distributed or
+multi-user requirements are called out separately rather than treated as
+immediate vulnerabilities.
+
+### P0 — protect the production boundary
+
+- [x] Remove the public `POST /api/auth/setup` endpoint; fresh installs now create the first account through the server-side CLI seed flow. Evidence: `apps/server/src/routes/auth.ts`, `apps/server/src/seed.ts`, `scripts/setup.sh`, and P0 regression tests.
+- [x] Bind the production backend to loopback (`127.0.0.1`) so the Node port is not a public bypass of Caddy.
+- [x] Stop trusting the spoofable first `X-Forwarded-For` value in rate limiting. The limiter now prefers proxy-controlled `X-Real-IP` and falls back to the final forwarded hop; the backend also binds to loopback by default and regression coverage is in the P0 test.
+- [ ] Add a backend integration-test suite covering auth, session expiry, rate limits, route authorization, note conflicts, sync cursors, uploads, and backup validation. The current P0 suite is a focused regression foundation, not full route/database coverage.
+
+### P1 — data, upload, and recovery safety
+
+- [ ] Remove SVG uploads or sanitize them before serving; do not rely on the client-provided MIME type alone.
+- [ ] Bind presigned PUT requests to the expected `Content-Type`, then continue verifying object size and completion server-side.
+- [ ] Introduce shared Zod schemas for auth, note, tag, search, sync, upload, and backup inputs, including maximum lengths and UUID validation.
+- [ ] Audit every resource route for explicit ownership checks using the authenticated user context, preserving the pattern needed for future multi-user support.
+- [ ] Add attachment-object disaster recovery: reconcile database metadata with R2 objects, detect orphans/missing objects, and define a second-copy or restore policy.
+- [ ] Run an automated restore drill against a temporary PostgreSQL database and representative R2 objects; record measured RPO/RTO.
+- [ ] Align backup retention with tombstone retention, or document and test the recovery behavior when a restored backup is older than the tombstone window.
+- [ ] Document the encryption boundary accurately: current server-side content encryption still derives a searchable `tsvector` from plaintext, so it is not end-to-end encryption.
+- [ ] Add `/readyz` with a database readiness check while keeping `/healthz` as a lightweight process liveness check.
+- [ ] Configure production database least privilege, connection timeouts, and TLS when PostgreSQL is not strictly local.
+
+### P1/P2 — deployment and operations
+
+- [ ] Add a global deploy lock to prevent concurrent release, migration, rollback, or service-restart operations.
+- [ ] Add deployment preflight checks for placeholder secrets, HTTPS origin, R2 configuration, Caddy validation, disk space, database connectivity, and frontend artifacts.
+- [ ] Add security-focused audit events for failed login, setup attempts, rate-limit responses, invalid sessions, upload mismatch, rejected imports, and recovery-required sync states without logging secrets or note content.
+- [ ] Add alerts for service failure/restart loops, failed or missing backups, low disk space, and R2 reconciliation failures.
+- [ ] Add cleanup jobs for expired sessions, failed queue records, orphan attachments, orphan R2 objects, old deployment snapshots, and bounded journal/log retention.
+
+### P2 — scale and supply-chain readiness
+
+- [ ] Add Playwright browser smoke tests for login, search typing (`a → ab → abc`), saved views, sorting, mobile sidebar, editing, upload, offline queue, and refresh recovery.
+- [ ] Enforce CI checks with `npm ci`, lockfile integrity, high/critical vulnerability scanning, frontend/backend tests, typechecks, builds, shell syntax checks, and server integration tests.
+- [ ] Generate an SBOM and establish dependency update/CVE monitoring.
+- [ ] Add scale fixtures and benchmarks for 1,000, 10,000, and 50,000 notes, including search, backlinks, tree rendering, and IndexedDB memory behavior.
+- [ ] Add quotas for note count, content size, attachment count, and total attachment storage before multi-user or public deployment.
+
+### Explicit architectural decisions to revisit
+
+- [ ] Decide whether server-side full-text search is acceptable or whether content search must become client-side for a stronger E2EE model.
+- [ ] Add master-key rotation and re-encryption tooling before treating encrypted backups as a long-term key-management solution.
+- [ ] Define the migration path to distributed rate limiting and queue leases before running multiple backend instances.
+
+## Hardening tracking TODO list
+
+Update this list as work is completed. For every checked item, record the
+commit, tests, and deployment/restore evidence in the release checklist above.
+
+- [x] **HARD-001** — Protect initial setup endpoint by making initial account creation CLI-only; evidence is recorded in the P0 auth test and release checklist.
+- [x] **HARD-002** — Fix trusted proxy/IP handling for rate limiting; prefer proxy-controlled `X-Real-IP` and use the final forwarded hop only as fallback, with regression tests. Node now binds to loopback by default.
+- [ ] **HARD-003** — Expand the backend P0 regression foundation into full route/database integration tests.
+- [ ] **HARD-004** — Harden SVG and presigned upload validation.
+- [ ] **HARD-005** — Add shared request schemas and resource ownership checks.
+- [ ] **HARD-006** — Add attachment reconciliation and disaster-recovery policy.
+- [ ] **HARD-007** — Automate database/R2 restore drills and record RPO/RTO.
+- [ ] **HARD-008** — Add `/readyz`, database timeouts, TLS/least privilege review.
+- [ ] **HARD-009** — Add deploy lock and production preflight validation.
+- [ ] **HARD-010** — Add security audit events, alerts, and cleanup jobs.
+- [ ] **HARD-011** — Add Playwright browser smoke coverage.
+- [ ] **HARD-012** — Enforce CI, vulnerability scanning, SBOM, and dependency monitoring.
+- [ ] **HARD-013** — Add scale fixtures, quotas, and benchmark evidence.
+- [ ] **HARD-014** — Decide and document the server-side search versus E2EE boundary.
+- [ ] **HARD-015** — Design key rotation and multi-instance readiness.
+
+_Last audited: 2026-08-03. No item above is marked complete solely because it has been documented._

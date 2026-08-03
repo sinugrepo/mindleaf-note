@@ -220,10 +220,10 @@ run_deploy() {
     local args=("$SOURCE_ROOT/scripts/deploy.sh")
     [[ "$NO_MIGRATE" -eq 1 ]] && args+=(--no-migrate)
     [[ "$DRY_RUN" -eq 1 ]] && args+=(--dry-run)
-    # A fresh one-liner must provision as root. For later deploys, execute the
-    # build/deploy as the invoking operator so the persistent checkout and its
+    # A fresh one-liner provisions packages as root, then executes the
+    # release as the invoking operator so the persistent checkout and its
     # dependency cache remain usable without root.
-    if [[ $EUID -eq 0 && "$operator_user" != root && "$MODE" == deploy ]]; then
+    if [[ $EUID -eq 0 && "$operator_user" != root && ("$MODE" == deploy || "$MODE" == fresh) ]]; then
         sudo -u "$operator_user" -H env DEPLOY_ROOT="$INSTALL_ROOT" bash "${args[@]}"
     else
         env DEPLOY_ROOT="$INSTALL_ROOT" bash "${args[@]}"
@@ -274,7 +274,22 @@ case "$MODE" in
         export ALLOWED_ORIGIN R2_ACCOUNT_ID R2_ACCESS_KEY R2_SECRET_KEY INSTALL_ROOT DEPLOY_ROOT="$INSTALL_ROOT"
         log "running first-time VPS provisioning; generated secrets will be stored in $RUNTIME_ENV"
         (cd "$SOURCE_ROOT" && bash "$SOURCE_ROOT/deploy/scripts/bootstrap.sh")
-        log "provisioning complete; building and activating the first release"
+        if [[ ! -f "$RUNTIME_ENV" ]]; then
+            err "bootstrap did not create $RUNTIME_ENV"
+            exit 66
+        fi
+        operator_home="$(getent passwd "$operator_user" | cut -d: -f6)"
+        [[ -n "$operator_home" ]] || { err "cannot resolve home directory for $operator_user"; exit 66; }
+        log "installing dependencies before account creation"
+        sudo -u "$operator_user" -H env HOME="$operator_home" bash -c \
+            "cd '$SOURCE_ROOT' && env -u NODE_ENV -u NPM_CONFIG_PRODUCTION -u NPM_CONFIG_OMIT npm ci --include=dev --prefer-offline --no-audit --no-fund"
+        log "applying the schema before account creation"
+        sudo -u mindleaf -H env HOME=/home/mindleaf bash -c \
+            "cd '$SOURCE_ROOT' && set -a && source '$RUNTIME_ENV' && set +a && npm run db:push --workspace=@mindleaf/server -- --force"
+        log "creating the first account through the server-side CLI"
+        sudo -u mindleaf -H env HOME=/home/mindleaf bash -c \
+            "cd '$SOURCE_ROOT' && set -a && source '$RUNTIME_ENV' && set +a && npm run seed --workspace=@mindleaf/server"
+        log "account created; building and activating the first release"
         run_deploy
         ;;
 esac

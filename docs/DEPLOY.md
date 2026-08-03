@@ -297,14 +297,15 @@ https://notes.sinug.my.id
 # expect: SPA login page muncul
 ```
 
-### 2.4 First-time setup: bikin master password
+### 2.4 First-time account: master password
 
-> Ini adalah flow **Onboarding Wizard** (Phase 8) — bukan dari VPS CLI.
+> Account creation is server-side by design. The browser only performs login.
 
-1. Login pertama ke SPA → masukkan master password baru (min 8 char)
-2. Backend automatically creates user row via `POST /api/auth/setup` (rate-limited)
-3. Cookie HttpOnly di-set (SameSite=Strict, 30-day rolling expiry)
-4. IndexedDB kosong (browser baru / private mode) → full upload available
+1. Fresh setup runs `npm run seed --workspace=@mindleaf/server` on the VPS.
+2. The administrator enters the master password in the server terminal.
+3. Open the SPA and log in with that password.
+4. The backend sets an HttpOnly cookie (SameSite=Strict, 30-day rolling expiry).
+5. IndexedDB remains available locally even when the backend is temporarily offline.
 
 ---
 

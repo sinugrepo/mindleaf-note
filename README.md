@@ -29,9 +29,10 @@ The script will:
 4. Create the protected `mindleaf` service account.
 5. Generate and store application/database secrets in `/opt/mindleaf/.env`.
 6. Configure PostgreSQL, backups, Caddy, and systemd.
-7. Build the backend and frontend.
-8. Generate the Caddy configuration from the domain you entered.
-9. Start the application and verify `/healthz`.
+7. Create the first account through the server-side `npm run seed` command.
+8. Build the backend and frontend.
+9. Generate the Caddy configuration from the domain you entered.
+10. Start the application and verify `/healthz`.
 
 The script is safe to run again. It detects the existing installation and performs
 a normal release deployment instead of generating new secrets. Existing
@@ -108,6 +109,8 @@ The one-line installer expects the default paths `/opt/mindleaf` and
 `/opt/mindleaf-source`; this keeps the service files, cron backup, and runtime
 paths consistent. The production service remains at `/opt/mindleaf`; do not
 move that directory without also updating the systemd and backup configuration.
+The backend binds only to `127.0.0.1:8787` in production and is exposed publicly
+through Caddy, not through the Node port directly.
 
 ## 🖥️ Local development
 
@@ -206,6 +209,8 @@ docs/               Detailed operational runbooks
   open, and two R2 buckets: `mindleaf-prod` for attachments and
   `mindleaf-prod-backups` for database backups. Change `R2_BUCKET` or the
   backup remote only in the production configuration if you use different names.
+- The first account is created only through the server-side CLI seed flow; never
+  expose a public setup endpoint or place the master password in a URL.
 - Keep a database backup before schema changes or migration.
 - `--no-restore` is for an empty/new database; it is not a replacement for a
   data-preserving migration.
@@ -225,8 +230,8 @@ npm --prefix apps/server run build
 git diff --check
 ```
 
-The server currently has script placeholders rather than a full integration-test
-suite. The remaining hardening work is tracked in
+The backend has a Vitest regression suite for P0 hardening; broader route and
+PostgreSQL integration coverage remains tracked in
 [`docs/STABILITY-ROADMAP.md`](./docs/STABILITY-ROADMAP.md).
 
 ## 🛠️ Useful operational commands
@@ -242,10 +247,11 @@ sudo bash /opt/mindleaf-source/scripts/setup.sh --dry-run
 sudo bash /opt/mindleaf-source/scripts/setup.sh --pull
 ```
 
-After a fresh install, open the public HTTPS address in your browser and follow
-the setup/onboarding screen to create the first account. The local health check
-only proves that the backend is running; DNS, HTTPS, and R2 storage must also be
-ready for the complete application to work.
+After a fresh install, open the public HTTPS address in your browser and log in
+with the master password entered by the administrator during the server-side
+`npm run seed` step. Account creation is intentionally not exposed as a public
+browser endpoint. The local health check only proves that the backend is running;
+DNS, HTTPS, and R2 storage must also be ready for the complete application to work.
 
 For detailed troubleshooting, backups, rollback, DNS/TLS, and VPS recovery, see:
 

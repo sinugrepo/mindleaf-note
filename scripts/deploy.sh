@@ -365,12 +365,8 @@ if [[ $NO_MIGRATE -eq 0 ]]; then
     if [[ $DRY_RUN -eq 1 ]]; then
         log "would source $TARGET_ENV and run npm run db:push --workspace=@mindleaf/server -- --force"
     else
-        set -a
-        # shellcheck disable=SC1091
-        source "$TARGET_ENV"
-        set +a
-        env -u NODE_ENV -u NPM_CONFIG_PRODUCTION -u NPM_CONFIG_OMIT \
-            npm run db:push --workspace=@mindleaf/server -- --force
+        sudo -u "$RUNTIME_USER" -H env HOME="$(getent passwd "$RUNTIME_USER" | cut -d: -f6)" \
+            bash -c "cd '$REPO_PATH' && set -a && source '$TARGET_ENV' && set +a && env -u NODE_ENV -u NPM_CONFIG_PRODUCTION -u NPM_CONFIG_OMIT npm run db:push --workspace=@mindleaf/server -- --force"
     fi
 else
     warn "--no-migrate specified; skipping db:push"

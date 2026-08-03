@@ -39,13 +39,18 @@ export function SearchResults() {
     });
   }, [notes]);
 
-  if (!notes || !fuse) return <div className="p-4 text-xs text-zinc-500">Preparing search...</div>;
-
-  const results = fuse.search(searchQuery, { limit: MAX_RENDERED_SEARCH_RESULTS });
+  // Keep every hook unconditional. `useLiveQuery` starts with `undefined`
+  // while IndexedDB is loading, then returns the notes on a later render.
+  // Building this map after the loading early-return would change the hook
+  // order and crash the search view as soon as the query resolves.
   const notesById = useMemo(
     () => new Map((notes ?? []).map((note) => [note.id, note])),
     [notes],
   );
+
+  if (!notes || !fuse) return <div className="p-4 text-xs text-zinc-500">Preparing search...</div>;
+
+  const results = fuse.search(searchQuery, { limit: MAX_RENDERED_SEARCH_RESULTS });
 
   const getBreadcrumbs = (note: Note) => {
     let current = note;
