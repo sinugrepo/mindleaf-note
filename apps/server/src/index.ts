@@ -135,7 +135,9 @@ app.onError((err, c) => {
 
 const port = parseInt(process.env.PORT ?? '8787', 10);
 
-serve({ fetch: app.fetch, port }, (info) => {
+const hostname = process.env.HOST ?? '127.0.0.1';
+
+serve({ fetch: app.fetch, port, hostname }, (info) => {
   console.log(`🌿 Mindleaf backend listening on http://localhost:${info.port}`);
 });
 

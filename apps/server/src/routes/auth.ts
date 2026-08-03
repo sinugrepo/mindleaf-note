@@ -73,34 +73,6 @@ authRoutes.post('/logout', async (c) => {
   return c.json({ ok: true });
 });
 
-// --- POST /setup ---
-// One-time setup: creates the single user row with the master password.
-// Returns 409 if a user already exists (prevents re-setting the password
-// without auth). Rate-limited to prevent abuse.
-authRoutes.post(
-  '/setup',
-  rateLimit({ key: 'setup', requests: 3, windowMs: 60 * 60_000 }),
-  async (c) => {
-  const existing = await db.select().from(users).limit(1);
-  if (existing.length > 0) {
-    return c.json({ error: 'Account already exists' }, 409);
-  }
-
-  const body = await c.req.json().catch(() => null);
-  if (!body || typeof body.password !== 'string' || body.password.length < 8) {
-    return c.json({ error: 'Password must be at least 8 characters' }, 400);
-  }
-
-  // OWASP-recommended Argon2id parameters.
-  // Algorithm.Argon2id = 2 (can't use the enum directly with isolatedModules).
-  const passwordHash = await hash(body.password, {
-    algorithm: 2, // Argon2id
-    memoryCost: 65536, // 64 MB
-    timeCost: 3,
-    parallelism: 4,
-  });
-
-    await db.insert(users).values({ passwordHash });
-    return c.json({ ok: true });
-  },
-);
+// Initial account creation is intentionally CLI-only. Keeping setup out of
+// the public HTTP surface prevents an attacker from claiming a fresh VPS
+// before its owner completes provisioning. Use `npm run seed` on the server.

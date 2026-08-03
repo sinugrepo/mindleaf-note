@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Cloud, KeyRound, Loader2, LogIn, RefreshCw, WifiOff } from 'lucide-react';
+import { Cloud, Loader2, LogIn, RefreshCw, WifiOff } from 'lucide-react';
 import { api, checkSession, setHasSession } from '../api/client';
 
 interface AuthGateProps {
   children: (onLogout: () => Promise<void>) => React.ReactNode;
 }
 
-type GatePhase = 'checking' | 'login' | 'setup' | 'offline' | 'authenticated';
+type GatePhase = 'checking' | 'login' | 'offline' | 'authenticated';
 
 /**
  * Owns the browser session lifecycle. The backend uses an HttpOnly cookie,
@@ -15,7 +15,6 @@ type GatePhase = 'checking' | 'login' | 'setup' | 'offline' | 'authenticated';
  */
 export function AuthGate({ children }: AuthGateProps) {
   const [phase, setPhase] = useState<GatePhase>('checking');
-  const [mode, setMode] = useState<'login' | 'setup'>('login');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,10 +45,6 @@ export function AuthGate({ children }: AuthGateProps) {
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     const value = password;
-    if (mode === 'setup' && value.length < 8) {
-      setError('Password minimal 8 karakter.');
-      return;
-    }
     if (!value) {
       setError('Password wajib diisi.');
       return;
@@ -58,20 +53,16 @@ export function AuthGate({ children }: AuthGateProps) {
     setBusy(true);
     setError(null);
     try {
-      if (mode === 'setup') {
-        await api.setup(value);
-      }
-      // /auth/setup deliberately only creates the account; login creates
-      // the HttpOnly session cookie used by every sync request.
+      // The initial account is created through the server-side CLI seed
+      // command during provisioning. Browser auth only logs in.
       await api.login({ password: value });
       setLocalOnly(false);
       setPassword('');
       setPhase('authenticated');
     } catch (err) {
       const status = (err as { status?: number }).status;
-      if (mode === 'setup' && status === 409) {
-        setMode('login');
-        setError('Akun sudah ada. Silakan masuk dengan password yang sudah dibuat.');
+      if (status === 404) {
+        setError('Akun belum dibuat. Jalankan perintah seed di server terlebih dahulu.');
       } else {
         setError(err instanceof Error ? err.message : 'Autentikasi gagal.');
       }
@@ -84,7 +75,6 @@ export function AuthGate({ children }: AuthGateProps) {
     await api.logout();
     setPassword('');
     setLocalOnly(false);
-    setMode('login');
     setPhase('login');
   };
 
@@ -141,18 +131,18 @@ export function AuthGate({ children }: AuthGateProps) {
       <div className="w-full max-w-md rounded-2xl border border-white/70 dark:border-white/10 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-xl shadow-2xl p-8">
         <div className="flex items-center gap-3">
           <div className="grid place-items-center w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500/20 to-violet-500/20 border border-white/70 dark:border-white/10">
-            {mode === 'login' ? <LogIn className="w-6 h-6 text-blue-600 dark:text-blue-400" /> : <KeyRound className="w-6 h-6 text-blue-600 dark:text-blue-400" />}
+            <LogIn className="w-6 h-6 text-blue-600 dark:text-blue-400" />
           </div>
           <div>
             <div className="flex items-center gap-2">
               <Cloud className="w-4 h-4 text-blue-500" />
               <span className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-600 dark:text-blue-400">Mindleaf Cloud</span>
             </div>
-            <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">{mode === 'login' ? 'Masuk untuk sinkronisasi' : 'Buat akun cloud'}</h1>
+            <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">Masuk untuk sinkronisasi</h1>
           </div>
         </div>
         <p className="mt-5 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-          {mode === 'login' ? 'Note tetap tersedia lokal, lalu akan disinkronkan ke PostgreSQL dan gambar ke Cloudflare R2 setelah masuk.' : 'Buat password utama untuk mengenkripsi isi note di backend.'}
+          Note tetap tersedia lokal, lalu akan disinkronkan ke PostgreSQL dan gambar ke Cloudflare R2 setelah masuk.
         </p>
 
         <form onSubmit={submit} className="mt-6 space-y-4">
@@ -160,24 +150,21 @@ export function AuthGate({ children }: AuthGateProps) {
           <input
             id="auth-password"
             type="password"
-            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+            autoComplete="current-password"
             value={password}
             onChange={(event) => { setPassword(event.target.value); setError(null); }}
-            placeholder={mode === 'login' ? 'Masukkan password' : 'Minimal 8 karakter'}
+            placeholder="Masukkan password"
             className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/70 px-3 py-2.5 text-sm text-zinc-900 dark:text-zinc-100 outline-none focus:ring-2 focus:ring-blue-500/40"
             disabled={busy}
           />
           {error && <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 px-3 py-2 text-xs text-red-700 dark:text-red-300">{error}</p>}
           <button type="submit" disabled={busy} className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:opacity-60 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-blue-500/20 transition-all">
-            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : mode === 'login' ? <LogIn className="w-4 h-4" /> : <KeyRound className="w-4 h-4" />}
-            {busy ? 'Memproses…' : mode === 'login' ? 'Masuk' : 'Buat akun dan masuk'}
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
+            {busy ? 'Memproses…' : 'Masuk'}
           </button>
         </form>
 
-        <button type="button" onClick={() => { setMode((current) => current === 'login' ? 'setup' : 'login'); setError(null); }} className="mt-5 w-full text-center text-xs text-blue-600 dark:text-blue-400 hover:underline">
-          {mode === 'login' ? 'Belum punya akun? Buat akun cloud' : 'Sudah punya akun? Masuk'}
-        </button>
-        <p className="mt-5 text-center text-[11px] text-zinc-500">Session aman menggunakan HttpOnly cookie. Isi note tetap terenkripsi di server.</p>
+        <p className="mt-5 text-center text-[11px] text-zinc-500">Akun pertama dibuat oleh administrator melalui CLI. Session aman menggunakan HttpOnly cookie.</p>
       </div>
     </div>
   );

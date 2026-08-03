@@ -29,16 +29,21 @@ export interface RateLimitOptions {
 }
 
 /**
- * Extract a rate-limit identifier from the request. Prefers the
- * `X-Forwarded-For` header (behind Caddy), falls back to the Hono
- * `c.req.header('x-real-ip')`, then to a constant (for local dev
- * where no proxy headers are present).
+ * Extract a rate-limit identifier from the request. Caddy overwrites
+ * `X-Real-IP` and `X-Forwarded-For` before proxying to Node, so prefer
+ * `X-Real-IP` and only use the final forwarded hop as a fallback. Never
+ * trust the first client-supplied value in a forwarded-for chain: that
+ * value is trivially spoofable and would let an attacker rotate buckets.
  */
-function getClientIp(c: Parameters<MiddlewareHandler>[0]): string {
-  const fwd = c.req.header('x-forwarded-for');
-  if (fwd) return fwd.split(',')[0].trim();
-  const real = c.req.header('x-real-ip');
+export function getClientIp(c: Parameters<MiddlewareHandler>[0]): string {
+  const real = c.req.header('x-real-ip')?.trim();
   if (real) return real;
+  const fwd = c.req.header('x-forwarded-for');
+  if (fwd) {
+    const hops = fwd.split(',').map((value) => value.trim()).filter(Boolean);
+    const last = hops.at(-1);
+    if (last) return last;
+  }
   return '127.0.0.1';
 }
 

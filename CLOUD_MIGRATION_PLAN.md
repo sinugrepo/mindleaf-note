@@ -998,7 +998,7 @@ Phase 0–4 telah diimplementasikan dan diverifikasi:
 | `apps/server/src/db/index.ts` | postgres-js + Drizzle instance (`db` + `pgClient` export) |
 | `apps/server/src/middleware/auth.ts` | Session middleware — HMAC-signed cookie, `timingSafeEqual`, rolling 30-day expiry |
 | `apps/server/src/middleware/ratelimit.ts` | In-memory token-bucket rate limiter (Redis-free) |
-| `apps/server/src/routes/auth.ts` | `POST /login` (Argon2id verify + cookie), `POST /logout`, `POST /setup` (rate-limited) |
+| `apps/server/src/routes/auth.ts` | `POST /login` (Argon2id verify + cookie), `POST /logout`, `CLI seed` (rate-limited) |
 | `apps/server/src/routes/notes.ts` | CRUD + recursive CTE descendants + `If-Match` optimistic locking (409 Conflict) |
 | `apps/server/src/routes/upload.ts` | `POST /presign` (mime/size validation), `GET /attachments/:id`, `POST /complete` |
 | `apps/server/src/routes/search.ts` | ILIKE title search (FTS tsvector deferred to Phase 6) |
@@ -1128,7 +1128,7 @@ Gunakan tabel ini untuk tracking progress saat mulai eksekusi. Cara pakai:
 |:---:|:---|:---:|:---:|:---:|:---:|:---|
 | 0 | Repo Restructure (monorepo `apps/{web,server}` + `packages/shared`) | ☑ DONE | ½ day | 2026-07-23 | 2026-07-23 | monorepo + npm workspaces; frontend moved to apps/web; shared types in packages/shared; vite proxy /api → 8787 |
 | 1 | Backend Skeleton + Postgres (Hono + Drizzle + Docker Compose) | ☑ DONE | 1 day | 2026-07-23 | 2026-07-23 | Hono app + /healthz; Drizzle schema (users, sessions, notes, attachments with customType bytea); docker-compose.yml (pg+minio); drizzle.config.ts |
-| 2 | Auth (Argon2id + HttpOnly cookie + rate-limit) | ☑ DONE | ½ day | 2026-07-23 | 2026-07-23 | Argon2id hash/verify; HMAC-signed session cookie (HttpOnly, SameSite=Strict); rolling 30d expiry; in-memory token-bucket rate limiter on /login (5/15min) + /setup (3/hr); session middleware; POST /auth/setup for first-time |
+| 2 | Auth (Argon2id + HttpOnly cookie + rate-limit) | ☑ DONE | ½ day | 2026-07-23 | 2026-07-23 | Argon2id hash/verify; HMAC-signed session cookie (HttpOnly, SameSite=Strict); rolling 30d expiry; in-memory token-bucket rate limiter on /login (5/15min); session middleware; CLI-only first-account seed; public HTTP setup is intentionally disabled |
 | 3 | Notes CRUD + AES-256-GCM (recursive CTE tree) | ☑ DONE | 1–2 days | 2026-07-23 | 2026-07-23 | AES-256-GCM encrypt/decrypt (12-byte nonce, auth tag); GET/POST/PATCH/DELETE/restore/permanent notes; recursive CTE for descendant collection; optimistic locking via If-Match + version; self-ref FK on parentId |
 | 4 | Image Presigned R2 (direct PUT, signed GET) | ☑ DONE | 1 day | 2026-07-23 | 2026-07-23 | S3Client (R2/MinIO, forcePathStyle); POST /upload/presign (mime/size validation, 5MB limit); GET /attachments/:id (presigned GET 10min TTL); POST /attachments/:id/complete; presignPut/presignGet helpers |
 | 5 | Offline-First Sync Layer (Dexie v5 + drainer + conflict UX) | ☑ DONE | 2–3 days 🔥 | 2026-07-23 | 2026-07-23 | **phasa terbesar**; 8 new files (api/client, sync/queue, pull, push, conflict, drainer, useSyncEngine, useSyncStatus); 12 modified files (types, db v5 schema, notes.ts, Editor, TreeView, Sidebar, TrashView, ResizableImage, App, db.test, notes.test); 2 round code review; 277/277 tests pass; TBD #11/#12/#14 decided; circular imports broken; dirty flag lifecycle complete; emptyTrash + import routed through queue; 401 session detection |

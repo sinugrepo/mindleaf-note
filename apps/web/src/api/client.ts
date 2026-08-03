@@ -137,14 +137,6 @@ export const api = {
     }
   },
 
-  async setup(password: string): Promise<{ ok: true }> {
-    const result = await apiFetch<{ ok: true }>('/auth/setup', {
-      method: 'POST',
-      body: JSON.stringify({ password }),
-    });
-    return result;
-  },
-
   async getMeInfo(): Promise<{ createdAt: number; noteCount: number }> {
     return checkSession();
   },
