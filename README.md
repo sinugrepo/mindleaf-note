@@ -225,13 +225,15 @@ Run the frontend tests and builds from the repository root:
 npm --prefix apps/web run test:run
 npm --prefix apps/web run lint
 npm --prefix apps/web run build
+npm --prefix apps/server run test:run
 npm --prefix apps/server run lint
 npm --prefix apps/server run build
 git diff --check
 ```
 
-The backend has a Vitest regression suite for P0 hardening; broader route and
-PostgreSQL integration coverage remains tracked in
+The backend has a Vitest regression suite for P0/P1 hardening; it includes
+listener-free Hono route requests and upload validation. Broader PostgreSQL
+integration coverage remains tracked in
 [`docs/STABILITY-ROADMAP.md`](./docs/STABILITY-ROADMAP.md).
 
 ## 🛠️ Useful operational commands

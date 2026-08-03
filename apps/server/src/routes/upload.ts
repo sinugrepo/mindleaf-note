@@ -16,16 +16,17 @@ import {
 } from '../middleware/body-limit.js';
 import { randomUUID } from 'node:crypto';
 import type {
-  PresignRequest,
   PresignResponse,
   AttachmentUrlResponse,
 } from '@mindleaf/shared';
+import {
+  MAX_UPLOAD_BYTES,
+  presignRequestSchema,
+  isAllowedUploadMime,
+} from '../lib/upload-validation.js';
 import type { AppEnv } from '../env.js';
 
 export const uploadRoutes = new Hono<AppEnv>();
-
-/** Max upload size: 5 MB. Matches the plan's limit. */
-const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 // Phase 10 — Per-route body-size override. The presign endpoint
 // receives a small JSON envelope {filename, mime, sizeBytes, noteId}
@@ -34,16 +35,6 @@ const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 // directly to R2 via the presigned URL. So 1 MB is purely a
 // streaming safety net against malformed JSON bombs.
 uploadRoutes.use('/presign', bodySizeLimit(UPLOAD_PRESIGN_BYTES));
-
-/** Allowed image MIME types. */
-const ALLOWED_MIMES = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
-  'image/svg+xml',
-  'image/avif',
-]);
 
 // --- POST /presign ---
 // Validates the upload request, creates an attachment row, and returns
@@ -56,21 +47,19 @@ uploadRoutes.post(
       return c.json({ error: 'Object storage not configured' }, 503);
     }
 
-    const body = await c.req.json().catch(() => null) as PresignRequest | null;
-    if (!body || !body.filename || !body.mime || !body.noteId) {
-      return c.json({ error: 'filename, mime, and noteId are required' }, 400);
-    }
-
-    if (!ALLOWED_MIMES.has(body.mime)) {
-      return c.json({ error: `Unsupported file type: ${body.mime}` }, 400);
-    }
-
-    if (!Number.isFinite(body.sizeBytes) || body.sizeBytes <= 0 || body.sizeBytes > MAX_UPLOAD_BYTES) {
+    const rawBody = await c.req.json().catch(() => null);
+    const parsed = presignRequestSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      const hasUnsupportedMime =
+        typeof rawBody === 'object' && rawBody !== null &&
+        'mime' in rawBody && typeof rawBody.mime === 'string' &&
+        !isAllowedUploadMime(rawBody.mime);
       return c.json(
-        { error: `Invalid file size. Must be greater than 0 and at most ${MAX_UPLOAD_BYTES / 1024 / 1024} MB.` },
-        413,
+        { error: hasUnsupportedMime ? 'Unsupported image type' : 'Invalid upload request' },
+        hasUnsupportedMime ? 400 : 422,
       );
     }
+    const body = parsed.data;
 
     // Verify the note exists.
     const noteRows = await db
@@ -151,7 +140,7 @@ uploadRoutes.post(
         .where(eq(attachments.id, attachmentId));
     }
 
-    const uploadUrl = await presignPut(r2Key);
+    const uploadUrl = await presignPut(r2Key, stored.mime);
 
     const response: PresignResponse = {
       attachmentId,
@@ -175,22 +164,28 @@ uploadRoutes.post('/attachments/:id/complete', async (c) => {
 
   if (rows.length === 0) {
     return c.json({ error: 'Attachment not found' }, 404);
-  }
-  if (!s3Client || !rows[0].r2Key) {
-    return c.json({ error: 'Attachment storage is not configured' }, 503);
-  }
+  }    if (!s3Client || !rows[0].r2Key) {
+      return c.json({ error: 'Attachment storage is not configured' }, 503);
+    }
+    if (!isAllowedUploadMime(rows[0].mime)) {
+      return c.json({ error: 'Attachment type is no longer allowed' }, 422);
+    }
 
-  // Confirm the object exists and record the authoritative byte count.
+    // Confirm the object exists and record the authoritative byte count.
   // A client cannot mark an upload complete merely by calling this route.
   try {
     const head = await headR2Object(rows[0].r2Key);
     const actualSize = Number(head.ContentLength ?? -1);
     const expectedSize = rows[0].sizeBytes;
+    const actualMime = head.ContentType?.split(';', 1)[0]?.trim().toLowerCase();
     if (!Number.isFinite(actualSize) || actualSize < 0 || actualSize > MAX_UPLOAD_BYTES) {
       return c.json({ error: 'Uploaded object exceeds the size limit' }, 413);
     }
     if (expectedSize > 0 && actualSize !== expectedSize) {
       return c.json({ error: 'Uploaded object size does not match the requested size' }, 409);
+    }
+    if (actualMime !== rows[0].mime) {
+      return c.json({ error: 'Uploaded object type does not match the requested type' }, 409);
     }
     await db
       .update(attachments)

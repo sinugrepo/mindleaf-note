@@ -57,7 +57,7 @@ This checklist tracks work needed to keep Mindleaf reliable as the local cache, 
 
 > Tombstones are retained for 90 days by default (`TOMBSTONE_RETENTION_DAYS`). Devices offline longer than this window require a deliberate backup/full-recovery procedure; the client must not silently discard local data.
 - [x] Document dependency/security checks in the release checklist; run `npm audit` after each release (current audit result must be recorded per deployment).
-- [ ] Add server route/integration tests; the server currently has no automated test suite.
+- [x] Add a server Vitest route/regression foundation; full PostgreSQL-backed coverage remains tracked in the P0 audit below.
 
 **Exit checklist:** the latest backup has a verified restore result; stale queue/backup/attachment conditions are observable; large imports fail gracefully instead of exhausting VPS memory.
 
@@ -101,9 +101,9 @@ immediate vulnerabilities.
 
 ### P1 — data, upload, and recovery safety
 
-- [ ] Remove SVG uploads or sanitize them before serving; do not rely on the client-provided MIME type alone.
-- [ ] Bind presigned PUT requests to the expected `Content-Type`, then continue verifying object size and completion server-side.
-- [ ] Introduce shared Zod schemas for auth, note, tag, search, sync, upload, and backup inputs, including maximum lengths and UUID validation.
+- [x] Remove SVG uploads and validate the declared upload MIME, UUID, filename, and size server-side; backup attachments use the same MIME allowlist. Binary magic-byte verification and legacy-object reconciliation remain follow-up work.
+- [x] Bind presigned PUT requests to the expected `Content-Type`, then verify object MIME and size at completion; this does not replace binary-content sniffing.
+- [ ] Introduce shared Zod schemas for auth, note, tag, search, sync, upload, and backup inputs beyond the upload boundary.
 - [ ] Audit every resource route for explicit ownership checks using the authenticated user context, preserving the pattern needed for future multi-user support.
 - [ ] Add attachment-object disaster recovery: reconcile database metadata with R2 objects, detect orphans/missing objects, and define a second-copy or restore policy.
 - [ ] Run an automated restore drill against a temporary PostgreSQL database and representative R2 objects; record measured RPO/RTO.
@@ -141,9 +141,9 @@ commit, tests, and deployment/restore evidence in the release checklist above.
 
 - [x] **HARD-001** — Protect initial setup endpoint by making initial account creation CLI-only; evidence is recorded in the P0 auth test and release checklist.
 - [x] **HARD-002** — Fix trusted proxy/IP handling for rate limiting; prefer proxy-controlled `X-Real-IP` and use the final forwarded hop only as fallback, with regression tests. Node now binds to loopback by default.
-- [ ] **HARD-003** — Expand the backend P0 regression foundation into full route/database integration tests.
-- [ ] **HARD-004** — Harden SVG and presigned upload validation.
-- [ ] **HARD-005** — Add shared request schemas and resource ownership checks.
+- [ ] **HARD-003** — Expand the backend P0 regression foundation into full PostgreSQL-backed route/database integration tests; listener-free app request coverage is now present.
+- [x] **HARD-004** — Harden declared SVG/MIME and presigned upload validation; evidence: `apps/server/src/lib/upload-validation.ts`, upload/backup routes, R2 signed `Content-Type`, and upload regression tests. Binary magic-byte verification remains a follow-up.
+- [ ] **HARD-005** — Add shared request schemas and resource ownership checks; upload schema coverage is partial and broader route validation remains.
 - [ ] **HARD-006** — Add attachment reconciliation and disaster-recovery policy.
 - [ ] **HARD-007** — Automate database/R2 restore drills and record RPO/RTO.
 - [ ] **HARD-008** — Add `/readyz`, database timeouts, TLS/least privilege review.
@@ -155,4 +155,4 @@ commit, tests, and deployment/restore evidence in the release checklist above.
 - [ ] **HARD-014** — Decide and document the server-side search versus E2EE boundary.
 - [ ] **HARD-015** — Design key rotation and multi-instance readiness.
 
-_Last audited: 2026-08-03. No item above is marked complete solely because it has been documented._
+_Last audited: 2026-08-03. Checked items include implementation and automated validation evidence; remaining items are not complete solely because they are documented._

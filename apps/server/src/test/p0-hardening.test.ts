@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
+import { createApp } from '../app.js';
 import { getClientIp } from '../middleware/ratelimit.js';
 import { authRoutes } from '../routes/auth.js';
 
@@ -36,5 +37,25 @@ describe('P0 CLI-only initial setup', () => {
     app.route('/api/auth', authRoutes);
 
     expect(app.routes.some((route) => route.path === '/api/auth/setup')).toBe(false);
+  });
+});
+
+describe('listener-free application integration', () => {
+  it('serves health without opening a TCP listener', async () => {
+    const response = await createApp().request('/healthz');
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+  });
+
+  it('protects a real API route when no session cookie is present', async () => {
+    const response = await createApp().request('/api/notes');
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('does not expose setup through the full application', () => {
+    expect(createApp().routes.some((route) => route.path === '/api/auth/setup')).toBe(false);
   });
 });
