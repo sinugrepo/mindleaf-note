@@ -21,7 +21,13 @@ import type {
   BackupImportResponse,
   NoteDTO,
 } from '@mindleaf/shared';
-import { isAllowedUploadMime, uuidSchema } from '../lib/upload-validation.js';
+import {
+  isAllowedUploadMime,
+  MAX_UPLOAD_BYTES,
+  uuidSchema,
+} from '../lib/upload-validation.js';
+import { noteOwnedBy, attachmentOwnedBy, tombstoneOwnedBy } from '../lib/ownership.js';
+import { backupPayloadSchema } from '../lib/request-schemas.js';
 import type { AppEnv } from '../env.js';
 
 export const backupRoutes = new Hono<AppEnv>();
@@ -116,6 +122,7 @@ backupRoutes.post(
   '/export/full',
   rateLimit({ key: 'export', requests: 5, windowMs: 60_000 }),
   async (c) => {
+    const userId = c.get('userId');
     // Pin to a non-null const so closures inside `pMap` see the
     // narrowed value — TS would otherwise widen `s3Client` back to
     // `S3Client | null` inside the async callback.
@@ -137,14 +144,14 @@ backupRoutes.post(
     const noteRows = await db
       .select()
       .from(notes)
-      .where(eq(notes.isDeleted, false));
+      .where(and(eq(notes.isDeleted, false), noteOwnedBy(userId)));
     const noteDtos = noteRows.map((r) =>
       rowToNoteDTO(r, decryptRow(r)),
     );
 
     // 2. Fetch all attachment rows (canonical metadata source for
     //    both locally-created and cloud-uploaded images).
-    const attRows = await db.select().from(attachments);
+    const attRows = await db.select().from(attachments).where(attachmentOwnedBy(userId));
 
     // 3. Download each attachment from R2 in parallel, capped at
     //    CONCURRENCY to keep the backend from OOMing on huge
@@ -259,10 +266,23 @@ const MAX_IMPORT_BYTES = 100 * 1024 * 1024; // 100 MB upper bound
 const MAX_IMPORT_NOTES = 50_000;
 const MAX_IMPORT_ATTACHMENTS = 50_000;
 
+function backupAttachmentSize(dataBase64: unknown): number | null {
+  if (dataBase64 === undefined || dataBase64 === '') return 0;
+  if (typeof dataBase64 !== 'string') return null;
+  const normalized = dataBase64.replace(/=+$/, '');
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(dataBase64)) {
+    return null;
+  }
+  const decoded = Buffer.from(dataBase64, 'base64');
+  if (decoded.toString('base64').replace(/=+$/, '') !== normalized) return null;
+  return decoded.length <= MAX_UPLOAD_BYTES ? decoded.length : null;
+}
+
 backupRoutes.post(
   '/import/full',
   rateLimit({ key: 'import', requests: 5, windowMs: 60_000 }),
   async (c) => {
+    const userId = c.get('userId');
     const s3 = s3Client;
     if (!s3) {
       return c.json({ error: 'Object storage not configured' }, 503);
@@ -320,10 +340,12 @@ backupRoutes.post(
         400,
       );
     }
-    const rawNotes = obj.notes as unknown[];
-    const rawAttachments = Array.isArray(obj.attachments)
-      ? (obj.attachments as unknown[])
-      : [];
+    const validatedBackup = backupPayloadSchema.safeParse(parsed);
+    if (!validatedBackup.success) {
+      return c.json({ error: 'Backup contains invalid note or attachment fields' }, 400);
+    }
+    const rawNotes = validatedBackup.data.notes as unknown[];
+    const rawAttachments = validatedBackup.data.attachments as unknown[];
     // Reject oversized arrays before any per-item database lookup. Also
     // reject duplicate IDs in one backup, since silently choosing one
     // payload would make the restore non-deterministic.
@@ -358,7 +380,7 @@ backupRoutes.post(
       if (!raw || typeof raw !== 'object') {
         return c.json({ error: 'Backup contains an invalid attachment record' }, 400);
       }
-      const candidate = raw as { id?: unknown; noteId?: unknown; mime?: unknown };
+      const candidate = raw as { id?: unknown; noteId?: unknown; mime?: unknown; dataBase64?: unknown };
       if (
         typeof candidate.id !== 'string' ||
         !uuidSchema.safeParse(candidate.id).success ||
@@ -368,6 +390,9 @@ backupRoutes.post(
         !isAllowedUploadMime(candidate.mime)
       ) {
         return c.json({ error: 'Backup contains invalid attachment metadata' }, 400);
+      }
+      if (backupAttachmentSize(candidate.dataBase64) === null) {
+        return c.json({ error: 'Backup contains invalid or oversized attachment data' }, 400);
       }
       if (attachmentIds.has(candidate.id)) {
         return c.json(
@@ -380,18 +405,37 @@ backupRoutes.post(
     // Reject invalid attachment metadata, missing note references, and
     // ownership conflicts before changing any notes. This keeps a malformed
     // backup from producing a partially imported database state.
+    const existingBackupNoteRows = noteIds.size > 0
+      ? await db
+        .select({ id: notes.id, userId: notes.userId })
+        .from(notes)
+        .where(inArray(notes.id, Array.from(noteIds)))
+      : [];
+    for (const row of existingBackupNoteRows) {
+      if (row.userId !== userId) {
+        return c.json({ error: `Note id is already owned by another user: ${row.id}` }, 409);
+      }
+    }
     const referencedNoteIds = new Set(
       rawAttachments.map((raw) => (raw as { noteId: string }).noteId),
     );
     const existingNoteIds = referencedNoteIds.size > 0
       ? await db
-        .select({ id: notes.id })
+        .select({ id: notes.id, userId: notes.userId })
         .from(notes)
         .where(inArray(notes.id, Array.from(referencedNoteIds)))
       : [];
+    for (const row of existingNoteIds) {
+      if (row.userId !== userId) {
+        return c.json({ error: `Note id is already owned by another user: ${row.id}` }, 409);
+      }
+    }
+    const ownedExistingNoteIds = existingNoteIds
+      .filter((row) => row.userId === userId)
+      .map((row) => row.id);
     const knownNoteIds = new Set([
       ...noteIds,
-      ...existingNoteIds.map((row) => row.id),
+      ...ownedExistingNoteIds,
     ]);
     for (const noteId of referencedNoteIds) {
       if (!knownNoteIds.has(noteId)) {
@@ -409,7 +453,7 @@ backupRoutes.post(
       const existing = await db
         .select({ noteId: attachments.noteId })
         .from(attachments)
-        .where(eq(attachments.id, candidate.id))
+        .where(and(eq(attachments.id, candidate.id), attachmentOwnedBy(c.get('userId'))))
         .limit(1);
       if (existing.length > 0 && existing[0].noteId !== candidate.noteId) {
         return c.json(
@@ -418,13 +462,34 @@ backupRoutes.post(
         );
       }
     }
+    // Validate parent ownership before changing any rows. A parent may be
+    // supplied by this backup or may already exist for this authenticated user;
+    // a foreign or missing parent must never be attached to an imported note.
+    const parentIds = new Set(
+      rawNotes
+        .map((raw) => (raw as { parentId?: unknown }).parentId)
+        .filter((parentId): parentId is string => typeof parentId === 'string'),
+    );
+    const externalParentIds = [...parentIds].filter((id) => !noteIds.has(id));
+    if (externalParentIds.length > 0) {
+      const parentRows = await db
+        .select({ id: notes.id, userId: notes.userId })
+        .from(notes)
+        .where(inArray(notes.id, externalParentIds));
+      const parentMap = new Map(parentRows.map((row) => [row.id, row.userId]));
+      for (const parentId of externalParentIds) {
+        if (parentMap.get(parentId) !== userId) {
+          return c.json({ error: `Backup references an unavailable parent note: ${parentId}` }, 400);
+        }
+      }
+    }
+
     // The byte and item limits protect the subsequent per-row encryption,
     // SQL, and presign loops from pathological backup payloads.
 
     // Insert notes. Server-encrypts content with master key and
     // bumps `version` so a subsequent PATCH will need If-Match: 1
     // (the client / sync layer will handle this on next pull).
-    const userId = c.get('userId');
     let notesImported = 0;
     const now = new Date();
 
@@ -459,6 +524,9 @@ backupRoutes.post(
       const id = n.id;
       const parentId =
         typeof n.parentId === 'string' ? n.parentId : null;
+      if (parentId === id) {
+        return c.json({ error: `Note cannot be its own parent: ${id}` }, 400);
+      }
       const title = typeof n.title === 'string' ? n.title : 'Untitled';
       const isFolder =
         typeof n.isFolder === 'boolean' ? n.isFolder : false;
@@ -486,6 +554,7 @@ backupRoutes.post(
           .insert(notes)
           .values({
             id,
+            userId,
             parentId,
             title,
             contentCt,
@@ -501,6 +570,8 @@ backupRoutes.post(
           })
           .onConflictDoUpdate({
             target: notes.id,
+            // A backup may only replace notes owned by this session.
+            where: eq(notes.userId, userId),
             set: {
               parentId,
               title,
@@ -522,6 +593,7 @@ backupRoutes.post(
         await tx
           .delete(tombstones)
           .where(and(
+            tombstoneOwnedBy(userId),
             eq(tombstones.resourceType, 'note'),
             eq(tombstones.resourceId, id),
           ));
@@ -543,6 +615,7 @@ backupRoutes.post(
         mime?: unknown;
         name?: unknown;
         createdAt?: unknown;
+        dataBase64?: unknown;
       };
       if (
         typeof a.id !== 'string' ||
@@ -555,6 +628,12 @@ backupRoutes.post(
       const r2Key = generateR2Key(userId, a.mime);
       const createdAt =
         typeof a.createdAt === 'number' ? a.createdAt : now.getTime();
+      const expectedSize = backupAttachmentSize(a.dataBase64);
+      // All attachment data was validated before note mutation. Keep this
+      // guard for type narrowing if the route is changed later.
+      if (expectedSize === null) {
+        return c.json({ error: 'Backup contains invalid or oversized attachment data' }, 400);
+      }
 
       const created = await db.transaction(async (tx) => {
         // Re-check ownership inside the transaction. The preflight check
@@ -563,7 +642,7 @@ backupRoutes.post(
         const existing = await tx
           .select({ noteId: attachments.noteId })
           .from(attachments)
-          .where(eq(attachments.id, attachmentId))
+          .where(and(eq(attachments.id, attachmentId), attachmentOwnedBy(userId)))
           .limit(1);
         if (existing.length > 0 && existing[0].noteId !== a.noteId) {
           return { conflict: true, created: false };
@@ -574,7 +653,8 @@ backupRoutes.post(
           await tx
             .delete(tombstones)
             .where(and(
-              eq(tombstones.resourceType, 'attachment'),
+              tombstoneOwnedBy(userId),
+            eq(tombstones.resourceType, 'attachment'),
               eq(tombstones.resourceId, attachmentId),
             ));
           return { conflict: false, created: false };
@@ -583,18 +663,23 @@ backupRoutes.post(
           .insert(attachments)
           .values({
             id: attachmentId,
+            userId,
             noteId: a.noteId,
             r2Key,
             mime: a.mime,
             name: typeof a.name === 'string' ? a.name : '',
-            sizeBytes: 0, // unknown until client completes PUT
+            // Preserve the expected size from a self-contained backup when
+            // available; complete will then reject a truncated or oversized
+            // object before it becomes authoritative. Empty data means the
+            // source object was unavailable, so size remains unknown (0).
+            sizeBytes: expectedSize,
             createdAt: new Date(createdAt),
           } as typeof attachments.$inferInsert)
           .onConflictDoNothing();
         const stored = await tx
           .select({ noteId: attachments.noteId })
           .from(attachments)
-          .where(eq(attachments.id, attachmentId))
+          .where(and(eq(attachments.id, attachmentId), attachmentOwnedBy(userId)))
           .limit(1);
         if (stored.length === 0 || stored[0].noteId !== a.noteId) {
           return { conflict: true, created: false };
@@ -602,6 +687,7 @@ backupRoutes.post(
         await tx
           .delete(tombstones)
           .where(and(
+            tombstoneOwnedBy(userId),
             eq(tombstones.resourceType, 'attachment'),
             eq(tombstones.resourceId, attachmentId),
           ));

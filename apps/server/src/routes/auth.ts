@@ -3,6 +3,7 @@ import { hash, verify } from '@node-rs/argon2';
 import { db } from '../db/index.js';
 import { users, sessions } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
+import { loginRequestSchema } from '../lib/request-schemas.js';
 import {
   setSessionCookie,
   clearSessionCookie,
@@ -23,7 +24,8 @@ authRoutes.post(
   rateLimit({ key: 'login', requests: 5, windowMs: 15 * 60_000 }),
   async (c) => {
     const body = await c.req.json().catch(() => null);
-    if (!body || typeof body.password !== 'string') {
+    const parsed = loginRequestSchema.safeParse(body);
+    if (!parsed.success) {
       return c.json({ error: 'Password is required' }, 400);
     }
 
@@ -34,7 +36,7 @@ authRoutes.post(
     }
     const user = userRows[0];
 
-    const isValid = await verify(user.passwordHash, body.password);
+    const isValid = await verify(user.passwordHash, parsed.data.password);
     if (!isValid) {
       return c.json({ error: 'Invalid password' }, 401);
     }

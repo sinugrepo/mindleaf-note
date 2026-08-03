@@ -66,9 +66,10 @@ export async function checkSession(): Promise<{ createdAt: number; noteCount: nu
  * The error includes the `ApiErrorResponse` body when the server
  * provides one (e.g. 409 Conflict with a `remote` note).
  *
- * Content-Type handling: defaults to `application/json` when no
- * body is given OR when the caller wants JSON. Skipped when the
- * caller passes a `FormData` body — the browser must own the
+ * Content-Type handling: defaults to `application/json` for requests
+ * with a body. Body-less GET/DELETE requests intentionally omit it
+ * to avoid an unnecessary CORS preflight. It is also skipped when
+ * the caller passes a `FormData` body — the browser must own the
  * Content-Type so it can compute the multipart boundary (any
  * caller-set `Content-Type: application/json` on a multipart body
  * would silently strip the boundary and the server would fail to
@@ -80,16 +81,19 @@ async function apiFetch<T>(
   init?: RequestInit,
 ): Promise<T> {
   const isFormData = init?.body instanceof FormData;
-  const baseHeaders: Record<string, string> = isFormData
-    ? /* let the browser fill multipart with boundary */
-      { ...(init?.headers as Record<string, string> | undefined) }
-    : {
-        'Content-Type': 'application/json',
-        ...(init?.headers as Record<string, string> | undefined),
-      };
+  const callerHeaders = new Headers(init?.headers);
+  const hasBody = init?.body !== undefined && init?.body !== null;
+  const baseHeaders = new Headers(callerHeaders);
+  if (!isFormData && hasBody && !baseHeaders.has('Content-Type')) {
+    // Do not attach Content-Type to body-less GET/DELETE requests.
+    // On a cross-origin deployment that header would trigger an
+    // unnecessary CORS preflight before the authenticated request.
+    baseHeaders.set('Content-Type', 'application/json');
+  }
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     credentials: 'include',
+    cache: 'no-store',
     headers: baseHeaders,
   });
 

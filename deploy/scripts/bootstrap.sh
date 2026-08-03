@@ -307,6 +307,7 @@ set -a
 source "$INSTALL_ROOT/.env"
 set +a
 env -u NODE_ENV -u NPM_CONFIG_PRODUCTION -u NPM_CONFIG_OMIT npm ci --include=dev
+npm run ownership:prepare --workspace=@mindleaf/server
 npm run db:push --workspace=@mindleaf/server -- --force
 SU
     log "db:push complete"

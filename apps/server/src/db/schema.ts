@@ -9,6 +9,7 @@ import {
   index,
   customType,
   uniqueIndex,
+  foreignKey,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 
@@ -88,6 +89,9 @@ export const notes = pgTable(
   'notes',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
     /** null = root-level note; otherwise self-referencing FK to parent. */
     parentId: uuid('parent_id').references((): AnyPgColumn => notes.id, {
       onDelete: 'set null',
@@ -121,6 +125,7 @@ export const notes = pgTable(
   },
   (table) => ({
     parentIdx: index('notes_parent_idx').on(table.parentId),
+    ownerIdIdx: uniqueIndex('notes_owner_id_idx').on(table.userId, table.id),
     updatedAtIdx: index('notes_updated_at_idx').on(table.updatedAt),
     deletedParentIdx: index('notes_deleted_parent_idx').on(
       table.isDeleted,
@@ -148,6 +153,9 @@ export const attachments = pgTable(
   'attachments',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
     noteId: uuid('note_id')
       .notNull()
       .references(() => notes.id, { onDelete: 'cascade' }),
@@ -157,10 +165,18 @@ export const attachments = pgTable(
     name: text('name').notNull().default(''),
     sizeBytes: integer('size_bytes').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    /** Changes when object metadata (key/size) becomes authoritative. */
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     noteIdx: index('attachments_note_idx').on(table.noteId),
     createdAtIdx: index('attachments_created_at_idx').on(table.createdAt),
+    updatedAtIdx: index('attachments_updated_at_idx').on(table.updatedAt),
+    ownerNoteFk: foreignKey({
+      name: 'attachments_user_note_fk',
+      columns: [table.userId, table.noteId],
+      foreignColumns: [notes.userId, notes.id],
+    }),
   }),
 );
 
@@ -172,6 +188,9 @@ export const tombstones = pgTable(
   'tombstones',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
     resourceType: text('resource_type').notNull(),
     resourceId: uuid('resource_id').notNull(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }).defaultNow().notNull(),

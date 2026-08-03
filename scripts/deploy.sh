@@ -366,7 +366,7 @@ if [[ $NO_MIGRATE -eq 0 ]]; then
         log "would source $TARGET_ENV and run npm run db:push --workspace=@mindleaf/server -- --force"
     else
         sudo -u "$RUNTIME_USER" -H env HOME="$(getent passwd "$RUNTIME_USER" | cut -d: -f6)" \
-            bash -c "cd '$REPO_PATH' && set -a && source '$TARGET_ENV' && set +a && env -u NODE_ENV -u NPM_CONFIG_PRODUCTION -u NPM_CONFIG_OMIT npm run db:push --workspace=@mindleaf/server -- --force"
+            bash -c "cd '$REPO_PATH' && set -a && source '$TARGET_ENV' && set +a && env -u NODE_ENV -u NPM_CONFIG_PRODUCTION -u NPM_CONFIG_OMIT npm run ownership:prepare --workspace=@mindleaf/server && env -u NODE_ENV -u NPM_CONFIG_PRODUCTION -u NPM_CONFIG_OMIT npm run db:push --workspace=@mindleaf/server -- --force"
     fi
 else
     warn "--no-migrate specified; skipping db:push"

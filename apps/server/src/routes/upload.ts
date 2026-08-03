@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { db } from '../db/index.js';
 import { attachments, notes, tombstones } from '../db/schema.js';
 import { and, eq } from 'drizzle-orm';
+import { attachmentOwnedBy, noteOwnedBy, tombstoneOwnedBy } from '../lib/ownership.js';
+import { uuidSchema } from '../lib/request-schemas.js';
 import {
   s3Client,
   presignPut,
@@ -65,7 +67,7 @@ uploadRoutes.post(
     const noteRows = await db
       .select()
       .from(notes)
-      .where(eq(notes.id, body.noteId))
+      .where(and(eq(notes.id, body.noteId), noteOwnedBy(c.get('userId'))))
       .limit(1);
     if (noteRows.length === 0) {
       return c.json({ error: 'Note not found' }, 404);
@@ -84,7 +86,7 @@ uploadRoutes.post(
     const existingAttachment = await db
       .select({ noteId: attachments.noteId })
       .from(attachments)
-      .where(eq(attachments.id, attachmentId))
+      .where(and(eq(attachments.id, attachmentId), attachmentOwnedBy(c.get('userId'))))
       .limit(1);
     if (existingAttachment.length > 0 && existingAttachment[0].noteId !== body.noteId) {
       return c.json({ error: 'Attachment id is already assigned to another note' }, 409);
@@ -94,6 +96,7 @@ uploadRoutes.post(
         .insert(attachments)
         .values({
           id: attachmentId,
+          userId: c.get('userId'),
           noteId: body.noteId,
           r2Key: requestedR2Key,
           mime: body.mime,
@@ -104,7 +107,7 @@ uploadRoutes.post(
       const stored = await tx
         .select({ noteId: attachments.noteId })
         .from(attachments)
-        .where(eq(attachments.id, attachmentId))
+        .where(and(eq(attachments.id, attachmentId), attachmentOwnedBy(c.get('userId'))))
         .limit(1);
       if (stored.length === 0 || stored[0].noteId !== body.noteId) {
         return false;
@@ -114,6 +117,7 @@ uploadRoutes.post(
       await tx
         .delete(tombstones)
         .where(and(
+          tombstoneOwnedBy(c.get('userId')),
           eq(tombstones.resourceType, 'attachment'),
           eq(tombstones.resourceId, attachmentId),
         ));
@@ -126,7 +130,7 @@ uploadRoutes.post(
     const rows = await db
       .select()
       .from(attachments)
-      .where(eq(attachments.id, attachmentId))
+      .where(and(eq(attachments.id, attachmentId), attachmentOwnedBy(c.get('userId'))))
       .limit(1);
     const stored = rows[0];
     if (!stored || stored.noteId !== body.noteId) {
@@ -136,8 +140,8 @@ uploadRoutes.post(
     if (!stored.r2Key) {
       await db
         .update(attachments)
-        .set({ r2Key })
-        .where(eq(attachments.id, attachmentId));
+        .set({ r2Key, updatedAt: new Date() })
+        .where(and(eq(attachments.id, attachmentId), attachmentOwnedBy(c.get('userId'))));
     }
 
     const uploadUrl = await presignPut(r2Key, stored.mime);
@@ -156,22 +160,24 @@ uploadRoutes.post(
 // attachment exists and records the authoritative object size via HEAD.
 uploadRoutes.post('/attachments/:id/complete', async (c) => {
   const id = c.req.param('id');
+  if (!uuidSchema.safeParse(id).success) return c.json({ error: 'Invalid attachment id' }, 400);
   const rows = await db
     .select()
     .from(attachments)
-    .where(eq(attachments.id, id))
+    .where(and(eq(attachments.id, id), attachmentOwnedBy(c.get('userId'))))
     .limit(1);
 
   if (rows.length === 0) {
     return c.json({ error: 'Attachment not found' }, 404);
-  }    if (!s3Client || !rows[0].r2Key) {
-      return c.json({ error: 'Attachment storage is not configured' }, 503);
-    }
-    if (!isAllowedUploadMime(rows[0].mime)) {
+  }
+  if (!s3Client || !rows[0].r2Key) {
+    return c.json({ error: 'Attachment storage is not configured' }, 503);
+  }
+  if (!isAllowedUploadMime(rows[0].mime)) {
       return c.json({ error: 'Attachment type is no longer allowed' }, 422);
     }
 
-    // Confirm the object exists and record the authoritative byte count.
+  // Confirm the object exists and record the authoritative byte count.
   // A client cannot mark an upload complete merely by calling this route.
   try {
     const head = await headR2Object(rows[0].r2Key);
@@ -189,8 +195,8 @@ uploadRoutes.post('/attachments/:id/complete', async (c) => {
     }
     await db
       .update(attachments)
-      .set({ sizeBytes: actualSize })
-      .where(eq(attachments.id, id));
+      .set({ sizeBytes: actualSize, updatedAt: new Date() })
+      .where(and(eq(attachments.id, id), attachmentOwnedBy(c.get('userId'))));
   } catch (error) {
     console.warn(`[upload] R2 object missing or unavailable for ${id}:`, error);
     return c.json({ error: 'Uploaded object could not be verified' }, 409);
@@ -204,10 +210,11 @@ uploadRoutes.post('/attachments/:id/complete', async (c) => {
 // this to render an <img> whose src is `attachment:<id>`.
 uploadRoutes.get('/attachments/:id', async (c) => {
   const id = c.req.param('id');
+  if (!uuidSchema.safeParse(id).success) return c.json({ error: 'Invalid attachment id' }, 400);
   const rows = await db
     .select()
     .from(attachments)
-    .where(eq(attachments.id, id))
+    .where(and(eq(attachments.id, id), attachmentOwnedBy(c.get('userId'))))
     .limit(1);
 
   if (rows.length === 0) {
