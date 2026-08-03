@@ -100,6 +100,12 @@ if [[ "$(id -u)" -eq 0 ]]; then
         if [[ "${1:-}" == "-u" ]]; then
             local target_user="${2:?sudo -u requires a user}"
             shift 2
+            # `sudo -H` changes HOME but is not a command-line option
+            # understood by runuser. The deploy commands set HOME explicitly
+            # where needed, so safely discard this sudo-only flag.
+            if [[ "${1:-}" == "-H" ]]; then
+                shift
+            fi
             runuser -u "$target_user" -- "$@"
         else
             "$@"
