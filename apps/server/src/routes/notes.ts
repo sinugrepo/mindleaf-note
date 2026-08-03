@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { db, pgClient } from '../db/index.js';
 import { notes, attachments, tombstones } from '../db/schema.js';
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import { noteCreateRequestSchema, notePatchRequestSchema, uuidSchema } from '../lib/request-schemas.js';
+import { noteOwnedBy, attachmentOwnedBy, tombstoneOwnedBy } from '../lib/ownership.js';
 import { encrypt, decrypt } from '../crypto.js';
 import { randomUUID } from 'node:crypto';
 import { htmlToPlaintext } from '../html-to-text.js';
@@ -60,13 +62,14 @@ function decryptRow(row: typeof notes.$inferSelect): string {
  * Collect a note + all its descendant IDs via a recursive CTE.
  * Uses postgres-js's parameterized template tag (safe from injection).
  */
-async function collectDescendantIds(noteId: string): Promise<string[]> {
+async function collectDescendantIds(noteId: string, userId: string): Promise<string[]> {
   const rows = (await pgClient`
     WITH RECURSIVE descendants AS (
-      SELECT id FROM notes WHERE id = ${noteId}::uuid
+      SELECT id FROM notes WHERE id = ${noteId}::uuid AND user_id = ${userId}::uuid
       UNION ALL
       SELECT n.id FROM notes n
       INNER JOIN descendants d ON n.parent_id = d.id
+      WHERE n.user_id = ${userId}::uuid
     )
     SELECT id FROM descendants
   `) as { id: string }[];
@@ -78,7 +81,7 @@ notesRoutes.get('/', async (c) => {
   const rows = await db
     .select()
     .from(notes)
-    .where(eq(notes.isDeleted, false));
+    .where(and(eq(notes.isDeleted, false), noteOwnedBy(c.get('userId'))));
 
   const dtos = rows.map((r) => rowToDTO(r, decryptRow(r)));
   return c.json(dtos);
@@ -89,7 +92,7 @@ notesRoutes.get('/trash', async (c) => {
   const rows = await db
     .select()
     .from(notes)
-    .where(eq(notes.isDeleted, true));
+    .where(and(eq(notes.isDeleted, true), noteOwnedBy(c.get('userId'))));
 
   const dtos = rows.map((r) => rowToDTO(r, decryptRow(r)));
   return c.json(dtos);
@@ -98,7 +101,8 @@ notesRoutes.get('/trash', async (c) => {
 // --- GET /:id (single note, decrypted) ---
 notesRoutes.get('/:id', async (c) => {
   const id = c.req.param('id');
-  const rows = await db.select().from(notes).where(eq(notes.id, id)).limit(1);
+  if (!uuidSchema.safeParse(id).success) return c.json({ error: 'Invalid note id' }, 400);
+  const rows = await db.select().from(notes).where(and(eq(notes.id, id), noteOwnedBy(c.get('userId')))).limit(1);
   if (rows.length === 0) {
     return c.json({ error: 'Note not found' }, 404);
   }
@@ -107,18 +111,32 @@ notesRoutes.get('/:id', async (c) => {
 
 // --- POST / (create note) ---
 notesRoutes.post('/', async (c) => {
-  const body = await c.req.json().catch(() => ({}));
-  const id = body.id ?? randomUUID();
-  const parentId = body.parentId ?? null;
-  const title = body.title ?? '';
-  const isFolder = body.isFolder ?? false;
+  const body = await c.req.json().catch(() => null);
+  const parsed = noteCreateRequestSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'Invalid note payload' }, 422);
+  const input = parsed.data;
+  const userId = c.get('userId');
+  if (input.parentId) {
+    const parent = await db.select({ id: notes.id }).from(notes).where(and(eq(notes.id, input.parentId), noteOwnedBy(userId))).limit(1);
+    if (parent.length === 0) return c.json({ error: 'Parent note not found' }, 404);
+  }
+  const id = input.id ?? randomUUID();
+  if (input.id) {
+    const existing = await db.select({ userId: notes.userId }).from(notes).where(eq(notes.id, input.id)).limit(1);
+    if (existing.length > 0 && existing[0].userId !== userId) {
+      return c.json({ error: 'Note id is already owned by another user' }, 409);
+    }
+  }
+  const parentId = input.parentId ?? null;
+  const title = input.title;
+  const isFolder = input.isFolder;
   const now = new Date();
 
   // Encrypt content if provided.
   let contentCt: Buffer | null = null;
   let contentNonce: Buffer | null = null;
-  if (typeof body.content === 'string' && body.content.length > 0) {
-    const enc = encrypt(body.content);
+  if (input.content.length > 0) {
+    const enc = encrypt(input.content);
     contentCt = enc.ct;
     contentNonce = enc.nonce;
   }
@@ -126,24 +144,25 @@ notesRoutes.post('/', async (c) => {
   // Recompute the FTS tsvector (cast rationale: see header comment
   // block at the top of this file). Computed once and reused for both
   // the insert and the onConflictDoUpdate branches.
-  const tsvectorSql = sql`to_tsvector('simple', ${title} || ' ' || ${htmlToPlaintext(body.content ?? '')})` as unknown as string;
+  const tsvectorSql = sql`to_tsvector('simple', ${title} || ' ' || ${htmlToPlaintext(input.content)})` as unknown as string;
 
   // Keep recreate/upsert and tombstone removal in one transaction. Without
   // this, a note recreated with the same stable ID could be deleted again by
   // the next delta pull because its old tombstone would still be present.
   const row = await db.transaction(async (tx) => {
-    const [created] = await tx
+      const [created] = await tx
       .insert(notes)
       .values({
         id,
+        userId,
         parentId,
         title,
         contentCt,
         contentNonce,
         isFolder,
         isExpanded: true,
-        orderIdx: body.orderIdx ?? now.getTime(),
-        tags: body.tags ?? [],
+        orderIdx: input.orderIdx ?? now.getTime(),
+        tags: input.tags,
         createdAt: now,
         updatedAt: now,
         version: 1,
@@ -155,14 +174,17 @@ notesRoutes.post('/', async (c) => {
       // Idempotent upsert (Phase 8 — onboarding re-entrancy).
       .onConflictDoUpdate({
         target: notes.id,
+        // A stable client-generated ID is only idempotent within its owner.
+        // The predicate prevents a cross-user ID from being overwritten.
+        where: eq(notes.userId, userId),
         set: {
           parentId,
           title,
           contentCt,
           contentNonce,
           isFolder,
-          orderIdx: body.orderIdx ?? now.getTime(),
-          tags: body.tags ?? [],
+          orderIdx: input.orderIdx ?? now.getTime(),
+          tags: input.tags,
           isDeleted: false,
           deletedAt: null,
           updatedAt: now,
@@ -175,26 +197,35 @@ notesRoutes.post('/', async (c) => {
     await tx
       .delete(tombstones)
       .where(and(
+        tombstoneOwnedBy(userId),
         eq(tombstones.resourceType, 'note'),
         eq(tombstones.resourceId, id),
       ));
-    return created;
+    return created ?? null;
   });
 
-  return c.json(rowToDTO(row, body.content ?? ''), 201);
+  if (!row) {
+    return c.json({ error: 'Note id is already owned by another user' }, 409);
+  }
+  return c.json(rowToDTO(row, input.content), 201);
 });
 
 // --- PATCH /:id (update note with optimistic locking via If-Match) ---
 notesRoutes.patch('/:id', async (c) => {
   const id = c.req.param('id');
-  const body = await c.req.json().catch(() => ({}));
+  const body = await c.req.json().catch(() => null);
+  const parsed = notePatchRequestSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'Invalid note payload' }, 422);
+  const input = parsed.data;
+  const userId = c.get('userId');
 
   // Check If-Match header for optimistic locking.
   const ifMatch = c.req.header('If-Match');
   const expectedVersion = ifMatch ? parseInt(ifMatch, 10) : null;
 
   // Fetch current row.
-  const rows = await db.select().from(notes).where(eq(notes.id, id)).limit(1);
+  if (!uuidSchema.safeParse(id).success) return c.json({ error: 'Invalid note id' }, 400);
+  const rows = await db.select().from(notes).where(and(eq(notes.id, id), noteOwnedBy(userId))).limit(1);
   if (rows.length === 0) {
     return c.json({ error: 'Note not found' }, 404);
   }
@@ -217,26 +248,32 @@ notesRoutes.patch('/:id', async (c) => {
     version: current.version + 1,
   };
 
-  if (typeof body.title === 'string') patch.title = body.title;
-  if (typeof body.content === 'string') {
-    const enc = encrypt(body.content);
+  if (input.title !== undefined) patch.title = input.title;
+  if (input.content !== undefined) {
+    const enc = encrypt(input.content);
     patch.contentCt = enc.ct;
     patch.contentNonce = enc.nonce;
   }
-  if (typeof body.isExpanded === 'boolean') patch.isExpanded = body.isExpanded;
-  if (typeof body.orderIdx === 'number') patch.orderIdx = body.orderIdx;
-  if (body.parentId !== undefined) patch.parentId = body.parentId;
-  if (Array.isArray(body.tags)) patch.tags = body.tags;
+  if (input.isExpanded !== undefined) patch.isExpanded = input.isExpanded;
+  if (input.orderIdx !== undefined) patch.orderIdx = input.orderIdx;
+  if (input.parentId !== undefined) {
+    if (input.parentId) {
+      const parent = await db.select({ id: notes.id }).from(notes).where(and(eq(notes.id, input.parentId), noteOwnedBy(userId))).limit(1);
+      if (parent.length === 0 || input.parentId === id) return c.json({ error: 'Parent note not found' }, 400);
+    }
+    patch.parentId = input.parentId;
+  }
+  if (input.tags !== undefined) patch.tags = input.tags;
 
   // Phase 6: if title or content changed, recompute the FTS index. We
   // use the INCOMING body values when present (so the index matches the
   // post-update state, not the pre-update state), and fall back to the
   // current row values otherwise.
-  const titleChanged = typeof body.title === 'string';
-  const contentChanged = typeof body.content === 'string';
-  const effectiveTitle = titleChanged ? body.title : current.title;
+  const titleChanged = input.title !== undefined;
+  const contentChanged = input.content !== undefined;
+  const effectiveTitle = titleChanged ? input.title : current.title;
   const effectivePlaintext = contentChanged
-    ? htmlToPlaintext(body.content)
+    ? htmlToPlaintext(input.content as string)
     : htmlToPlaintext(decryptRow(current));
   if (titleChanged || contentChanged) {
     // Same cast rationale as the POST branch above — see comments.
@@ -247,13 +284,13 @@ notesRoutes.patch('/:id', async (c) => {
   const [updated] = await db
     .update(notes)
     .set(patch)
-    .where(eq(notes.id, id))
+    .where(and(eq(notes.id, id), noteOwnedBy(userId)))
     .returning();
 
   // Return the updated DTO with the decrypted content (so the client
   // can verify what the server now holds).
   const decryptedContent =
-    typeof body.content === 'string' ? body.content : decryptRow(updated);
+    input.content !== undefined ? input.content : decryptRow(updated);
   return c.json(rowToDTO(updated, decryptedContent));
 });
 
@@ -262,9 +299,11 @@ notesRoutes.patch('/:id', async (c) => {
 // `is_deleted = true` + `deleted_at = now()` on each.
 notesRoutes.delete('/:id', async (c) => {
   const id = c.req.param('id');
+  const userId = c.get('userId');
+  if (!uuidSchema.safeParse(id).success) return c.json({ error: 'Invalid note id' }, 400);
   const now = new Date();
 
-  const ids = await collectDescendantIds(id);
+  const ids = await collectDescendantIds(id, userId);
   if (ids.length === 0) {
     // DELETE is intentionally idempotent: an offline mutation may arrive
     // after another device already purged this note. Returning success keeps
@@ -280,8 +319,7 @@ notesRoutes.delete('/:id', async (c) => {
       deletedAt: now,
       updatedAt: now,
       version: sql`${notes.version} + 1`,
-    })
-    .where(inArray(notes.id, ids));
+    })      .where(and(inArray(notes.id, ids), noteOwnedBy(userId)));
 
   return c.json({ ok: true, deleted: ids.length });
 });
@@ -289,9 +327,11 @@ notesRoutes.delete('/:id', async (c) => {
 // --- POST /:id/restore (restore note + descendants from trash) ---
 notesRoutes.post('/:id/restore', async (c) => {
   const id = c.req.param('id');
+  const userId = c.get('userId');
+  if (!uuidSchema.safeParse(id).success) return c.json({ error: 'Invalid note id' }, 400);
   const now = new Date();
 
-  const ids = await collectDescendantIds(id);
+  const ids = await collectDescendantIds(id, userId);
   if (ids.length === 0) {
     // Restore is also idempotent for stale offline mutations. The desired
     // state cannot be applied to a row that was already purged, but there is
@@ -307,7 +347,7 @@ notesRoutes.post('/:id/restore', async (c) => {
       updatedAt: now,
       version: sql`${notes.version} + 1`,
     })
-    .where(inArray(notes.id, ids));
+    .where(and(inArray(notes.id, ids), noteOwnedBy(userId)));
 
   return c.json({ ok: true, restored: ids.length });
 });
@@ -315,12 +355,14 @@ notesRoutes.post('/:id/restore', async (c) => {
 // --- POST /:id/permanent (permanently delete from trash) ---
 notesRoutes.post('/:id/permanent', async (c) => {
   const id = c.req.param('id');
+  const userId = c.get('userId');
+  if (!uuidSchema.safeParse(id).success) return c.json({ error: 'Invalid note id' }, 400);
 
   // Only allow permanent delete on already-trashed notes.
   const rows = await db
     .select()
     .from(notes)
-    .where(eq(notes.id, id))
+    .where(and(eq(notes.id, id), noteOwnedBy(userId)))
     .limit(1);
 
   if (rows.length === 0) {
@@ -332,18 +374,18 @@ notesRoutes.post('/:id/permanent', async (c) => {
     return c.json({ error: 'Note is not in trash' }, 400);
   }
 
-  const ids = await collectDescendantIds(id);
+  const ids = await collectDescendantIds(id, userId);
   const attachmentRows = await db
     .select({ id: attachments.id })
     .from(attachments)
-    .where(inArray(attachments.noteId, ids));
+    .where(and(inArray(attachments.noteId, ids), attachmentOwnedBy(userId)));
 
   // Preserve deletion facts and remove the source rows atomically. The
   // unique resource index makes retries idempotent; a failed transaction
   // cannot leave clients with tombstones for data that still exists.
   const deletionRows = [
-    ...ids.map((resourceId) => ({ resourceType: 'note', resourceId })),
-    ...attachmentRows.map(({ id: resourceId }) => ({ resourceType: 'attachment', resourceId })),
+    ...ids.map((resourceId) => ({ userId, resourceType: 'note', resourceId })),
+    ...attachmentRows.map(({ id: resourceId }) => ({ userId, resourceType: 'attachment', resourceId })),
   ];
   await db.transaction(async (tx) => {
     if (deletionRows.length > 0) {
@@ -352,7 +394,7 @@ notesRoutes.post('/:id/permanent', async (c) => {
         set: { deletedAt: new Date() },
       });
     }
-    await tx.delete(notes).where(inArray(notes.id, ids));
+    await tx.delete(notes).where(and(inArray(notes.id, ids), noteOwnedBy(userId)));
   });
 
   return c.json({ ok: true, deleted: ids.length });

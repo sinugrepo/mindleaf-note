@@ -231,10 +231,34 @@ npm --prefix apps/server run build
 git diff --check
 ```
 
-The backend has a Vitest regression suite for P0/P1 hardening; it includes
-listener-free Hono route requests and upload validation. Broader PostgreSQL
-integration coverage remains tracked in
-[`docs/STABILITY-ROADMAP.md`](./docs/STABILITY-ROADMAP.md).
+The backend has a Vitest regression suite for P0/P1 hardening and an opt-in
+PostgreSQL route integration suite. Normal tests do not touch a database. To
+run the integration tests, provision a separate database and pass its URL as
+`TEST_DATABASE_URL` (never reuse `DATABASE_URL`):
+
+```bash
+TEST_DATABASE_URL='postgres://test_user:test_password@127.0.0.1:5432/mindleaf_test' \
+  npm --prefix apps/server run test:run
+```
+
+The integration lifecycle applies the current
+schema, clears only that explicit test database between tests, and covers login, ownership, strict
+payload validation, optimistic locking, paginated sync, upload completion, and backup routes. For
+PostgreSQL plus MinIO/R2 object-storage coverage, provide a dedicated bucket and run:
+
+```bash
+TEST_DATABASE_URL='postgres://test_user:test_password@127.0.0.1:5432/mindleaf_test' \
+TEST_R2_ENDPOINT='http://127.0.0.1:9000' \
+TEST_R2_ACCESS_KEY='mindleaf' \
+TEST_R2_SECRET_KEY='devpw' \
+TEST_R2_BUCKET='mindleaf-integration-test' \
+npm --prefix apps/server run test:run
+```
+
+Never point `TEST_DATABASE_URL` at the normal application database or use a production R2 bucket: the suite deletes test rows and objects between cases. See
+
+[`docs/STABILITY-ROADMAP.md`](./docs/STABILITY-ROADMAP.md) for remaining
+operational hardening.
 
 ## 🛠️ Useful operational commands
 

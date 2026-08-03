@@ -15,7 +15,12 @@ import {
  * one connection is usually enough, but we allow 5 for concurrent
  * sync/CRUD calls.
  */
-const connectionString = process.env.DATABASE_URL;
+// Integration tests opt into an explicitly separate database. Only honor the
+// override under Vitest's test environment; a leaked TEST_DATABASE_URL must
+// never redirect a production process to a test database.
+const connectionString = process.env.NODE_ENV === 'test'
+  ? (process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL)
+  : process.env.DATABASE_URL;
 
 if (!connectionString) {
   throw new Error(
@@ -34,7 +39,7 @@ export const db = drizzle(queryClient, {
  * Named `pgClient` (not `sql`) to avoid shadowing Drizzle's `sql` helper
  * when both are imported in the same file.
  */
-export { queryClient as pgClient };
+export { queryClient, queryClient as pgClient };
 
 /**
  * Remove deletion-journal rows only after the configured offline recovery

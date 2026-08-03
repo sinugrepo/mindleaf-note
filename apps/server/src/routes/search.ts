@@ -3,6 +3,7 @@ import { db, pgClient } from '../db/index.js';
 import { notes } from '../db/schema.js';
 import { sql } from 'drizzle-orm';
 import { decrypt } from '../crypto.js';
+import { searchQuerySchema } from '../lib/request-schemas.js';
 import type { NoteDTO } from '@mindleaf/shared';
 import type { AppEnv } from '../env.js';
 
@@ -33,7 +34,9 @@ export const searchRoutes = new Hono<AppEnv>();
  * not need to know which backend search runs underneath.
  */
 searchRoutes.get('/', async (c) => {
-  const q = c.req.query('q')?.trim();
+  const parsedQuery = searchQuerySchema.safeParse({ q: c.req.query('q') });
+  if (!parsedQuery.success) return c.json({ error: 'Invalid search query' }, 400);
+  const q = parsedQuery.data.q;
   if (!q) {
     return c.json([]);
   }
@@ -68,6 +71,7 @@ searchRoutes.get('/', async (c) => {
         is_deleted, deleted_at, created_at, updated_at, version
       FROM notes
       WHERE is_deleted = false
+        AND user_id = ${(c.get('userId'))}::uuid
         AND content_tsvector @@ websearch_to_tsquery('simple', ${q})
       ORDER BY ts_rank(content_tsvector, websearch_to_tsquery('simple', ${q})) DESC,
                updated_at DESC

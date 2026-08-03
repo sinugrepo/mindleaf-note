@@ -3,6 +3,8 @@ import { and, asc, eq, gt, lte, or } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { notes, attachments, tombstones } from '../db/schema.js';
 import { decrypt } from '../crypto.js';
+import { noteOwnedBy, attachmentOwnedBy, tombstoneOwnedBy } from '../lib/ownership.js';
+import { syncQuerySchema } from '../lib/request-schemas.js';
 import type {
   SyncCursor,
   SyncSnapshot,
@@ -18,18 +20,13 @@ export const syncRoutes = new Hono<AppEnv>();
 const DEFAULT_PAGE_SIZE = 250;
 const MAX_PAGE_SIZE = 500;
 const DEFAULT_TOMBSTONE_RETENTION_DAYS = 90;
+const EMPTY_UUID = '00000000-0000-0000-0000-000000000000';
 
 function getTombstoneRetentionDays(): number {
   const configured = Number.parseInt(process.env.TOMBSTONE_RETENTION_DAYS ?? '', 10);
   return Number.isFinite(configured) && configured > 0
     ? configured
     : DEFAULT_TOMBSTONE_RETENTION_DAYS;
-}
-
-function parseLimit(raw: string | undefined): number {
-  const parsed = raw ? Number.parseInt(raw, 10) : DEFAULT_PAGE_SIZE;
-  if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_PAGE_SIZE;
-  return Math.min(parsed, MAX_PAGE_SIZE);
 }
 
 function decodeCursor(raw: string | undefined): SyncCursor | null {
@@ -45,6 +42,7 @@ function decodeCursor(raw: string | undefined): SyncCursor | null {
       streams.some((stream) =>
         !stream ||
         typeof stream.id !== 'string' ||
+        (stream.id !== '' && !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(stream.id)) ||
         typeof stream.updatedAt !== 'number' ||
         !Number.isFinite(stream.updatedAt) ||
         stream.updatedAt < 0 ||
@@ -58,7 +56,13 @@ function decodeCursor(raw: string | undefined): SyncCursor | null {
 }
 
 function initialStreamCursor(sinceMs: number): SyncStreamCursor {
-  return { updatedAt: Math.max(0, sinceMs), id: '' };
+  return { updatedAt: Math.max(0, sinceMs), id: EMPTY_UUID };
+}
+
+function streamCursorId(stream: SyncStreamCursor | null | undefined): string {
+  // Older clients may send the historical empty-string sentinel. UUID columns
+  // cannot compare against that value, so normalize it to the lowest UUID.
+  return stream?.id || EMPTY_UUID;
 }
 
 function cursorFromDate(id: string, date: Date): SyncStreamCursor {
@@ -73,15 +77,20 @@ function cursorFromDate(id: string, date: Date): SyncStreamCursor {
  * write racing the query is picked up by the next sync rather than skipped.
  */
 syncRoutes.get('/snapshot', async (c) => {
-  const limit = parseLimit(c.req.query('limit'));
-  const rawSince = c.req.query('since');
-  const sinceMs = rawSince ? Number.parseInt(rawSince, 10) : 0;
+  const query = syncQuerySchema.safeParse({
+    since: c.req.query('since'),
+    cursor: c.req.query('cursor'),
+    limit: c.req.query('limit'),
+  });
+  if (!query.success) return c.json({ error: 'Invalid sync query' }, 400);
+  const limit = query.data.limit ?? DEFAULT_PAGE_SIZE;
+  const sinceMs = query.data.since ?? 0;
   if (!Number.isFinite(sinceMs) || sinceMs < 0) {
     return c.json({ error: 'Invalid since parameter' }, 400);
   }
 
-  const decoded = decodeCursor(c.req.query('cursor'));
-  if (c.req.query('cursor') && !decoded) {
+  const decoded = decodeCursor(query.data.cursor);
+  if (query.data.cursor && !decoded) {
     return c.json({ error: 'Invalid sync cursor' }, 400);
   }
 
@@ -101,6 +110,7 @@ syncRoutes.get('/snapshot', async (c) => {
     }, 410);
   }
 
+  const userId = c.get('userId');
   const cursor: SyncCursor = decoded ?? {
     boundary: Date.now(),
     notes: initialStreamCursor(sinceMs),
@@ -113,12 +123,13 @@ syncRoutes.get('/snapshot', async (c) => {
     .select()
     .from(notes)
     .where(and(
+      noteOwnedBy(userId),
       lte(notes.updatedAt, boundary),
       or(
         gt(notes.updatedAt, new Date(cursor.notes?.updatedAt ?? 0)),
         and(
           eq(notes.updatedAt, new Date(cursor.notes?.updatedAt ?? 0)),
-          gt(notes.id, cursor.notes?.id ?? ''),
+          gt(notes.id, streamCursorId(cursor.notes)),
         ),
       ),
     ))
@@ -129,28 +140,30 @@ syncRoutes.get('/snapshot', async (c) => {
     .select()
     .from(attachments)
     .where(and(
-      lte(attachments.createdAt, boundary),
+      attachmentOwnedBy(userId),
+      lte(attachments.updatedAt, boundary),
       or(
-        gt(attachments.createdAt, new Date(cursor.attachments?.updatedAt ?? 0)),
+        gt(attachments.updatedAt, new Date(cursor.attachments?.updatedAt ?? 0)),
         and(
-          eq(attachments.createdAt, new Date(cursor.attachments?.updatedAt ?? 0)),
-          gt(attachments.id, cursor.attachments?.id ?? ''),
+          eq(attachments.updatedAt, new Date(cursor.attachments?.updatedAt ?? 0)),
+          gt(attachments.id, streamCursorId(cursor.attachments)),
         ),
       ),
     ))
-    .orderBy(asc(attachments.createdAt), asc(attachments.id))
+    .orderBy(asc(attachments.updatedAt), asc(attachments.id))
     .limit(limit + 1);
 
   const tombstoneRows = await db
     .select()
     .from(tombstones)
     .where(and(
+      tombstoneOwnedBy(userId),
       lte(tombstones.deletedAt, boundary),
       or(
         gt(tombstones.deletedAt, new Date(cursor.tombstones?.updatedAt ?? 0)),
         and(
           eq(tombstones.deletedAt, new Date(cursor.tombstones?.updatedAt ?? 0)),
-          gt(tombstones.id, cursor.tombstones?.id ?? ''),
+          gt(tombstones.id, streamCursorId(cursor.tombstones)),
         ),
       ),
     ))

@@ -12,7 +12,8 @@ import { pinoLogger } from './middleware/logger.js';
 import { bodySizeLimit, DEFAULT_API_BYTES } from './middleware/body-limit.js';
 import { db } from './db/index.js';
 import { users, notes } from './db/schema.js';
-import { count, eq } from 'drizzle-orm';
+import { and, count, eq } from 'drizzle-orm';
+import { noteOwnedBy } from './lib/ownership.js';
 import type { AppEnv } from './env.js';
 
 /**
@@ -60,14 +61,15 @@ export function createApp() {
   app.route('/api/backup', backupRoutes);
 
   app.get('/api/me/info', async (c) => {
-    const userRow = await db.select().from(users).limit(1);
+    const userId = c.get('userId');
+    const userRow = await db.select().from(users).where(eq(users.id, userId)).limit(1);
     if (userRow.length === 0) {
       return c.json({ createdAt: 0, noteCount: 0 });
     }
     const [{ noteCount }] = await db
       .select({ noteCount: count() })
       .from(notes)
-      .where(eq(notes.isDeleted, false));
+      .where(and(eq(notes.isDeleted, false), noteOwnedBy(userId)));
     return c.json({
       createdAt: userRow[0].createdAt.getTime(),
       noteCount: Number(noteCount),

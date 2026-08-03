@@ -26,7 +26,7 @@ This checklist tracks work needed to keep Mindleaf reliable as the local cache, 
 - [x] Coalesce pending `patch_note` mutations for the same note while preserving the original optimistic-lock base version.
 - [x] Coordinate queue draining across tabs with Web Locks and an IndexedDB lease fallback.
 - [x] Add frontend regression tests for coalescing, lock serialization, remote-missing recovery, and tree safety.
-- [ ] Add server integration tests for cursor boundaries, pagination, tombstone retention, and upload verification.
+- [ ] Complete the opt-in end-to-end execution of server integration tests for cursor boundaries, pagination, tombstone retention, upload verification, and backup import/export. Coverage is implemented in `apps/server/src/test/backend.integration.test.ts`; execution requires a dedicated `TEST_DATABASE_URL` plus isolated `TEST_R2_*` MinIO/R2 credentials.
 
 **Exit checklist:** sync replay tests pass; an offline client can catch up across multiple pages; permanent deletes disappear on another client; queue size remains bounded during repeated edits.
 
@@ -57,7 +57,7 @@ This checklist tracks work needed to keep Mindleaf reliable as the local cache, 
 
 > Tombstones are retained for 90 days by default (`TOMBSTONE_RETENTION_DAYS`). Devices offline longer than this window require a deliberate backup/full-recovery procedure; the client must not silently discard local data.
 - [x] Document dependency/security checks in the release checklist; run `npm audit` after each release (current audit result must be recorded per deployment).
-- [x] Add a server Vitest route/regression foundation; full PostgreSQL-backed coverage remains tracked in the P0 audit below.
+- [x] Add a server Vitest route/regression foundation and opt-in PostgreSQL-backed coverage; the dedicated integration database is intentionally separate from normal development data.
 
 **Exit checklist:** the latest backup has a verified restore result; stale queue/backup/attachment conditions are observable; large imports fail gracefully instead of exhausting VPS memory.
 
@@ -86,8 +86,9 @@ These are intentionally not part of the first stability pass because they requir
 
 This section records the follow-up security and operational audit. Items remain
 unchecked until the corresponding implementation and validation are complete.
-The focused P0 regression tests are not a substitute for full PostgreSQL-backed
-route integration tests; that broader work remains explicitly tracked below.
+The focused P0 regression tests are supplemented by an opt-in PostgreSQL-backed
+route integration suite; local execution requires a separately provisioned
+`TEST_DATABASE_URL`.
 The priorities assume the current single-user VPS deployment; distributed or
 multi-user requirements are called out separately rather than treated as
 immediate vulnerabilities.
@@ -97,14 +98,14 @@ immediate vulnerabilities.
 - [x] Remove the public `POST /api/auth/setup` endpoint; fresh installs now create the first account through the server-side CLI seed flow. Evidence: `apps/server/src/routes/auth.ts`, `apps/server/src/seed.ts`, `scripts/setup.sh`, and P0 regression tests.
 - [x] Bind the production backend to loopback (`127.0.0.1`) so the Node port is not a public bypass of Caddy.
 - [x] Stop trusting the spoofable first `X-Forwarded-For` value in rate limiting. The limiter now prefers proxy-controlled `X-Real-IP` and falls back to the final forwarded hop; the backend also binds to loopback by default and regression coverage is in the P0 test.
-- [ ] Add a backend integration-test suite covering auth, session expiry, rate limits, route authorization, note conflicts, sync cursors, uploads, and backup validation. The current P0 suite is a focused regression foundation, not full route/database coverage.
+- [x] Add a backend PostgreSQL integration-test suite covering login, expired sessions, rate limits, route authorization, note conflicts, strict payload validation, cursor retention, paginated notes/attachments/tombstones, upload completion, and backup import/export; the suite is opt-in via dedicated `TEST_DATABASE_URL` and isolated `TEST_R2_*` credentials. End-to-end execution evidence remains pending.
 
 ### P1 — data, upload, and recovery safety
 
 - [x] Remove SVG uploads and validate the declared upload MIME, UUID, filename, and size server-side; backup attachments use the same MIME allowlist. Binary magic-byte verification and legacy-object reconciliation remain follow-up work.
 - [x] Bind presigned PUT requests to the expected `Content-Type`, then verify object MIME and size at completion; this does not replace binary-content sniffing.
-- [ ] Introduce shared Zod schemas for auth, note, tag, search, sync, upload, and backup inputs beyond the upload boundary.
-- [ ] Audit every resource route for explicit ownership checks using the authenticated user context, preserving the pattern needed for future multi-user support.
+- [x] Introduce shared Zod schemas for auth, note, search, sync, upload, and backup inputs; tag values remain normalized by the existing shared tag helper.
+- [x] Audit every resource route for explicit ownership checks using the authenticated user context; notes and attachments now carry `user_id` with legacy backfill and route-level filtering.
 - [ ] Add attachment-object disaster recovery: reconcile database metadata with R2 objects, detect orphans/missing objects, and define a second-copy or restore policy.
 - [ ] Run an automated restore drill against a temporary PostgreSQL database and representative R2 objects; record measured RPO/RTO.
 - [ ] Align backup retention with tombstone retention, or document and test the recovery behavior when a restored backup is older than the tombstone window.
@@ -141,9 +142,9 @@ commit, tests, and deployment/restore evidence in the release checklist above.
 
 - [x] **HARD-001** — Protect initial setup endpoint by making initial account creation CLI-only; evidence is recorded in the P0 auth test and release checklist.
 - [x] **HARD-002** — Fix trusted proxy/IP handling for rate limiting; prefer proxy-controlled `X-Real-IP` and use the final forwarded hop only as fallback, with regression tests. Node now binds to loopback by default.
-- [ ] **HARD-003** — Expand the backend P0 regression foundation into full PostgreSQL-backed route/database integration tests; listener-free app request coverage is now present.
+- [ ] **HARD-003** — Execute the expanded PostgreSQL + MinIO/R2 route integration suite. The suite now covers login, expiry, rate limiting, ownership, conflicts, cursor retention, pagination across notes/attachments/tombstones, real object-storage upload completion, mismatch rejection, backup import/export, and backup ownership isolation. The implementation is present; completion evidence is pending a dedicated `TEST_DATABASE_URL` and isolated `TEST_R2_*` environment.
 - [x] **HARD-004** — Harden declared SVG/MIME and presigned upload validation; evidence: `apps/server/src/lib/upload-validation.ts`, upload/backup routes, R2 signed `Content-Type`, and upload regression tests. Binary magic-byte verification remains a follow-up.
-- [ ] **HARD-005** — Add shared request schemas and resource ownership checks; upload schema coverage is partial and broader route validation remains.
+- [x] **HARD-005** — Add shared backend request schemas and resource ownership checks; notes/attachments/tombstones now carry authenticated `user_id`, legacy data is backfilled before schema push, route queries/upserts enforce ownership, and attachments have a composite owner/note foreign key.
 - [ ] **HARD-006** — Add attachment reconciliation and disaster-recovery policy.
 - [ ] **HARD-007** — Automate database/R2 restore drills and record RPO/RTO.
 - [ ] **HARD-008** — Add `/readyz`, database timeouts, TLS/least privilege review.

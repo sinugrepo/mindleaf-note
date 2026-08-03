@@ -32,7 +32,7 @@ if (!endpoint || !accessKey || !secretKey) {
   );
 }
 
-export const s3Client = endpoint
+export const s3Client = endpoint && accessKey && secretKey
   ? new S3Client({
       region,
       endpoint,

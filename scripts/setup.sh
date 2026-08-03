@@ -285,7 +285,7 @@ case "$MODE" in
             "cd '$SOURCE_ROOT' && env -u NODE_ENV -u NPM_CONFIG_PRODUCTION -u NPM_CONFIG_OMIT npm ci --include=dev --prefer-offline --no-audit --no-fund"
         log "applying the schema before account creation"
         sudo -u mindleaf -H env HOME=/home/mindleaf bash -c \
-            "cd '$SOURCE_ROOT' && set -a && source '$RUNTIME_ENV' && set +a && npm run db:push --workspace=@mindleaf/server -- --force"
+            "cd '$SOURCE_ROOT' && set -a && source '$RUNTIME_ENV' && set +a && npm run ownership:prepare --workspace=@mindleaf/server && npm run db:push --workspace=@mindleaf/server -- --force"
         log "creating the first account through the server-side CLI"
         sudo -u mindleaf -H env HOME=/home/mindleaf bash -c \
             "cd '$SOURCE_ROOT' && set -a && source '$RUNTIME_ENV' && set +a && npm run seed --workspace=@mindleaf/server"
