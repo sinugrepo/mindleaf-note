@@ -47,6 +47,7 @@ async function enqueue(
     createdAt: Date.now(),
     attempts: 0,
     lastError: null,
+    retryable: undefined,
     status: 'pending',
   };
   await db.pendingMutations.add(mutation);
@@ -137,40 +138,78 @@ export function queuedPatchNote(
         dirty: true,
       });
 
-      // Coalesce every not-yet-started patch for this note. Keeping the
-      // earliest mutation preserves its original baseVersion, while merging
-      // the payloads in creation order preserves the latest value per field.
-      // The cross-tab sync lock covers the read/merge/delete/write sequence;
-      // without it, two tabs could each select a different first row and
-      // leave stale patches behind.
-      const queuedPatches = await db.pendingMutations
+      // If this note was created locally and has not reached the server yet,
+      // fold the edit into the create payload. Sending PATCH before POST is
+      // what causes the offline folder rename -> 404 loop.
+      const queuedCreates = await db.pendingMutations
         .where('resourceId')
         .equals(noteId)
-        .filter((mutation) => mutation.type === 'patch_note' && mutation.status === 'pending')
+        .filter((mutation) =>
+          mutation.type === 'create_note' &&
+          ['pending', 'failed'].includes(mutation.status),
+        )
         .sortBy('createdAt');
-      if (queuedPatches.length > 0) {
-        const [first, ...rest] = queuedPatches;
-        let mergedPayload: Record<string, unknown> = {};
-        for (const queued of queuedPatches) {
-          try {
-            mergedPayload = { ...mergedPayload, ...JSON.parse(queued.payload) };
-          } catch {
-            // Keep valid fields from other queue records if one old payload is malformed.
-          }
+      if (queuedCreates.length > 0) {
+        const [create] = queuedCreates;
+        let createPayload: Record<string, unknown> = {};
+        try {
+          createPayload = JSON.parse(create.payload);
+        } catch {
+          // Keep the existing create payload if an old queue row is malformed.
         }
-        mergedPayload = { ...mergedPayload, ...apiPayload };
-        await db.transaction('rw', db.pendingMutations, async () => {
-          await db.pendingMutations.update(first.id, {
-            payload: JSON.stringify(mergedPayload),
-            lastError: null,
+        const mergedCreatePayload = { ...createPayload, ...apiPayload };
+        // The create endpoint uses orderIdx and accepts the same mutable note
+        // fields as a patch, so remove no fields here. Reactivate a create
+        // that may have exhausted during an older offline session.
+        await db.pendingMutations.update(create.id, {
+          payload: JSON.stringify(mergedCreatePayload),
+          status: 'pending',
+          attempts: 0,
+          lastError: null,
+          retryable: undefined,
           });
-          if (rest.length > 0) {
-            await db.pendingMutations.bulkDelete(rest.map((queued) => queued.id));
-          }
-        });
         notifyDrainer();
       } else {
-        await enqueue('patch_note', noteId, apiPayload, currentVersion);
+        // Coalesce every not-yet-started patch for this note. Keeping the
+        // earliest mutation preserves its original baseVersion, while merging
+        // the payloads in creation order preserves the latest value per field.
+        // The cross-tab sync lock covers the read/merge/delete/write sequence;
+        // without it, two tabs could each select a different first row and
+        // leave stale patches behind.
+        const queuedPatches = await db.pendingMutations
+          .where('resourceId')
+          .equals(noteId)
+          .filter((mutation) =>
+            mutation.type === 'patch_note' &&
+            ['pending', 'failed'].includes(mutation.status),
+          )
+          .sortBy('createdAt');
+        if (queuedPatches.length > 0) {
+          const [first, ...rest] = queuedPatches;
+          let mergedPayload: Record<string, unknown> = {};
+          for (const queued of queuedPatches) {
+            try {
+              mergedPayload = { ...mergedPayload, ...JSON.parse(queued.payload) };
+            } catch {
+              // Keep valid fields from other queue records if one old payload is malformed.
+            }
+          }
+          mergedPayload = { ...mergedPayload, ...apiPayload };
+          await db.transaction('rw', db.pendingMutations, async () => {
+            await db.pendingMutations.update(first.id, {
+              payload: JSON.stringify(mergedPayload),
+              lastError: null,
+              status: 'pending',
+              attempts: 0,
+            });
+            if (rest.length > 0) {
+              await db.pendingMutations.bulkDelete(rest.map((queued) => queued.id));
+            }
+          });
+          notifyDrainer();
+        } else {
+          await enqueue('patch_note', noteId, apiPayload, currentVersion);
+        }
       }
       return { current, currentVersion, before };
     });
@@ -335,6 +374,7 @@ export async function queuedImportNotes(
     createdAt: Date.now(),
     attempts: 0,
     lastError: null,
+    retryable: undefined,
     status: 'pending',
   }));
 
@@ -351,6 +391,7 @@ export async function queuedImportNotes(
     createdAt: Date.now(),
     attempts: 0,
     lastError: null,
+    retryable: undefined,
     status: 'pending',
   }));
 

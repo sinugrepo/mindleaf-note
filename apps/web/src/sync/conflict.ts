@@ -116,6 +116,7 @@ export async function resolveKeepMine(
     baseVersion: remoteVersion,
     attempts: 0,
     lastError: null,
+    retryable: undefined,
     status: 'pending',
     createdAt: Date.now(),
   };

@@ -78,7 +78,7 @@ export function useSyncEngine(): void {
 
     // Online event → drain + pull.
     const handleOnline = () => {
-      notifyDrainer();
+      notifyDrainer(true);
       if (shouldSync()) {
         pullDelta().catch(() => {});
       }
