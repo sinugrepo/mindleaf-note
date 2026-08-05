@@ -8,31 +8,43 @@ canonical store and Cloudflare R2 stores attachments.
 
 ## 🚀 The easiest deployment: one script
 
-For a **new Ubuntu VPS**, first prepare the DNS and firewall:
+For a **new Ubuntu VPS**, prepare the following before running the script:
 
-- Point your domain's A/AAAA record to the VPS.
-- Allow inbound TCP ports 80 and 443.
-- Create two Cloudflare R2 buckets: `mindleaf-prod` for attachments and
-  `mindleaf-prod-backups` for database backups.
+> ⚠️ **Important:** the script installs packages, PostgreSQL, Node.js, Caddy,
+> rclone, services, secrets, and the initial admin account. It will stop with
+> an error—not report success—if these requirements are missing.
+
+- Ubuntu VPS with root/sudo access and outbound internet.
+- Domain A/AAAA record already pointing to the VPS.
+- Inbound TCP ports 80 and 443 open in the VPS/provider firewall.
+- Cloudflare R2 account ID, access key, and secret key.
+- R2 API token permission to create/read/write the attachment and backup
+  buckets. Object-only tokens are insufficient for a fresh install.
+- The script uses `mindleaf-prod`, `mindleaf-prod-backups`, and `db` by default;
+  these can be changed with setup options.
 
 Then run this one command as root:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sinugrepo/mindleaf/main/scripts/setup.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/sinugrepo/mindleaf-note/main/scripts/setup.sh | sudo bash
 ```
 
 The script will:
 
 1. Download the project.
-2. Ask for the public app URL and Cloudflare R2 credentials.
-3. Install Node.js, PostgreSQL, Caddy, rclone, and required packages.
+2. Collect the public app URL and Cloudflare R2 credentials in one input phase
+   (or read them from `MINDLEAF_*` variables in non-interactive mode).
+3. Create/verify the attachment and backup buckets, then install Node.js,
+   PostgreSQL, Caddy, rclone, and required packages.
 4. Create the protected `mindleaf` service account.
 5. Generate and store application/database secrets in `/opt/mindleaf/.env`.
 6. Configure PostgreSQL, backups, Caddy, and systemd.
-7. Create the first account through the server-side `npm run seed` command.
+7. Generate and seed the first admin password without a second prompt, saving
+   it in `/var/lib/mindleaf/admin-credentials.txt` with mode `0600`.
 8. Build the backend and frontend.
 9. Generate the Caddy configuration from the domain you entered.
-10. Start the application and verify `/healthz`.
+10. Start the application and verify local/public `/healthz`, all services, and
+    both R2 destinations before reporting completion.
 
 The script is safe to run again. It detects the existing installation and performs
 a normal release deployment instead of generating new secrets. Existing
@@ -206,9 +218,10 @@ docs/               Detailed operational runbooks
   existing encrypted note content after restore or migration.
 - Never run fresh-install mode over an existing `/opt/mindleaf` installation.
 - The first install needs a domain already pointing to the VPS, ports 80/443
-  open, and two R2 buckets: `mindleaf-prod` for attachments and
-  `mindleaf-prod-backups` for database backups. Change `R2_BUCKET` or the
-  backup remote only in the production configuration if you use different names.
+  open, and an R2 API token with bucket-management permission. `setup.sh`
+  creates/verifies `mindleaf-prod` for attachments and
+  `mindleaf-prod-backups` for database backups. Change the bucket/path using
+  the setup options when different names are required.
 - The first account is created only through the server-side CLI seed flow; never
   expose a public setup endpoint or place the master password in a URL.
 - Keep a database backup before schema changes or migration.
@@ -274,15 +287,18 @@ sudo bash /opt/mindleaf-source/scripts/setup.sh --pull
 ```
 
 After a fresh install, open the public HTTPS address in your browser and log in
-with the master password entered by the administrator during the server-side
-`npm run seed` step. Account creation is intentionally not exposed as a public
-browser endpoint. The local health check only proves that the backend is running;
-DNS, HTTPS, and R2 storage must also be ready for the complete application to work.
+with the admin password stored at `/var/lib/mindleaf/admin-credentials.txt`
+(mode `0600`). Setup generates this password automatically unless a protected
+password file was supplied. Account creation is intentionally not exposed as a
+public browser endpoint. The local health check only proves that the backend is
+running; DNS, HTTPS, and R2 storage must also be ready for the complete
+application to work.
 
 For detailed troubleshooting, backups, rollback, DNS/TLS, and VPS recovery, see:
 
 - [`docs/DEPLOY.md`](./docs/DEPLOY.md)
 - [`docs/MIGRASI-VPS.md`](./docs/MIGRASI-VPS.md)
+- [`docs/ONE-CLICK-DEPLOYMENT.md`](./docs/ONE-CLICK-DEPLOYMENT.md)
 - [`scripts/README-migrate-vps.txt`](./scripts/README-migrate-vps.txt)
 
 Health check after deployment:

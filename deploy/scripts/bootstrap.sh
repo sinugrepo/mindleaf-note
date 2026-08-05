@@ -40,6 +40,9 @@ set -euo pipefail
 BOOTSTRAP_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 BOOTSTRAP_SOURCE_ROOT="$(cd -- "$BOOTSTRAP_SCRIPT_DIR/../.." && pwd -P)"
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/mindleaf}"
+R2_BUCKET="${R2_BUCKET:-mindleaf-prod}"
+BACKUP_R2_BUCKET="${BACKUP_R2_BUCKET:-mindleaf-prod-backups}"
+BACKUP_R2_PATH="${BACKUP_R2_PATH:-db}"
 
 [[ "$INSTALL_ROOT" == /* && "$INSTALL_ROOT" != *[!A-Za-z0-9_./-]* ]] || {
     echo "ERROR: invalid INSTALL_ROOT: $INSTALL_ROOT" >&2
@@ -178,6 +181,9 @@ if [[ ! -f "$ENV_FILE" ]]; then
     R2_ACCOUNT_ID_ESC="$(sed_escape "$R2_ACCOUNT_ID")"
     R2_ACCESS_KEY_ESC="$(sed_escape "$R2_ACCESS_KEY")"
     R2_SECRET_KEY_ESC="$(sed_escape "$R2_SECRET_KEY")"
+    R2_BUCKET_ESC="$(sed_escape "$R2_BUCKET")"
+    BACKUP_R2_BUCKET_ESC="$(sed_escape "$BACKUP_R2_BUCKET")"
+    BACKUP_R2_PATH_ESC="$(sed_escape "$BACKUP_R2_PATH")"
     ALLOWED_ORIGIN_ESC="$(sed_escape "$ALLOWED_ORIGIN")"
 
     sed \
@@ -187,6 +193,9 @@ if [[ ! -f "$ENV_FILE" ]]; then
         -e "s|<R2_ACCOUNT_ID>|$R2_ACCOUNT_ID_ESC|g" \
         -e "s|<R2_ACCESS_KEY>|$R2_ACCESS_KEY_ESC|g" \
         -e "s|<R2_SECRET_KEY>|$R2_SECRET_KEY_ESC|g" \
+        -e "s|<R2_BUCKET>|$R2_BUCKET_ESC|g" \
+        -e "s|<BACKUP_R2_BUCKET>|$BACKUP_R2_BUCKET_ESC|g" \
+        -e "s|<BACKUP_R2_PATH>|$BACKUP_R2_PATH_ESC|g" \
         -e "s|<ALLOWED_ORIGIN>|$ALLOWED_ORIGIN_ESC|g" \
         "$TEMPLATE" > "$ENV_FILE"
 
@@ -289,6 +298,15 @@ else
     log "rclone.conf already exists — keeping"
 fi
 
+# Create and verify both application buckets. A token limited to object
+# access will fail here with a clear error; setup must not continue while the
+# attachment or backup destination is unavailable.
+RCLONE_CONFIG="$RCLONE_PATH" rclone mkdir "r2:$R2_BUCKET"
+RCLONE_CONFIG="$RCLONE_PATH" rclone mkdir "r2:$BACKUP_R2_BUCKET"
+RCLONE_CONFIG="$RCLONE_PATH" rclone lsf --max-depth 1 "r2:$R2_BUCKET" >/dev/null
+RCLONE_CONFIG="$RCLONE_PATH" rclone lsf --max-depth 1 "r2:$BACKUP_R2_BUCKET" >/dev/null
+log "attachment and backup R2 buckets verified"
+
 # ---------------------------------------------------------------------------
 # Step 7 — DB schema (Drizzle push)
 # ---------------------------------------------------------------------------
@@ -324,7 +342,7 @@ install -o mindleaf -g mindleaf -m 0644 /dev/null /var/lock/mindleaf-backup.lock
 # package manager, SSH, or remote rsync privilege. The runtime service account
 # remains `mindleaf`; DEPLOY_USER is normally the invoking human (e.g. sinug).
 cat > /etc/sudoers.d/mindleaf-deploy <<SUDOERS
-Cmnd_Alias MINDLEAF_DEPLOY = /usr/bin/systemctl *, /bin/systemctl *, /usr/bin/caddy *, /usr/bin/install *, /bin/install *, /usr/bin/mkdir *, /bin/mkdir *, /usr/bin/rm *, /bin/rm *, /usr/bin/cp *, /bin/cp *, /usr/bin/mv *, /bin/mv *, /usr/bin/chown *, /bin/chown *, /usr/bin/find *, /usr/bin/test *, /bin/test *
+Cmnd_Alias MINDLEAF_DEPLOY = /usr/bin/systemctl *, /bin/systemctl *, /usr/bin/caddy *, /usr/bin/install *, /bin/install *, /usr/bin/mkdir *, /bin/mkdir *, /usr/bin/rm *, /bin/rm *, /usr/bin/cp *, /bin/cp *, /usr/bin/mv *, /bin/mv *, /usr/bin/chown *, /bin/chown *, /usr/bin/find *, /usr/bin/test *, /bin/test *, /usr/bin/rclone *, /bin/rclone *, /usr/bin/awk *, /bin/awk *
 $DEPLOY_USER ALL=(root) NOPASSWD: MINDLEAF_DEPLOY
 SUDOERS
 chmod 440 /etc/sudoers.d/mindleaf-deploy

@@ -43,7 +43,18 @@ PG_USER="${PG_USER:-mindleaf}"
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/mindleaf}"
 PGPASSFILE="${PGPASSFILE:-$INSTALL_ROOT/.pgpass}"
 
-RCLONE_REMOTE="${RCLONE_REMOTE:-r2:mindleaf-prod-backups/db}"
+# The runtime env is the source of truth for the backup bucket/path. It is
+# loaded only in this process and never printed; explicit RCLONE_REMOTE still
+# wins for emergency/manual overrides.
+if [[ -f "$INSTALL_ROOT/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$INSTALL_ROOT/.env"
+    set +a
+fi
+BACKUP_R2_BUCKET="${BACKUP_R2_BUCKET:-mindleaf-prod-backups}"
+BACKUP_R2_PATH="${BACKUP_R2_PATH:-db}"
+RCLONE_REMOTE="${RCLONE_REMOTE:-r2:${BACKUP_R2_BUCKET}/${BACKUP_R2_PATH}}"
 RCLONE_CONFIG="${RCLONE_CONFIG:-$INSTALL_ROOT/.config/rclone/rclone.conf}"
 RETENTION_DAYS="${RETENTION_DAYS:-30}"
 
