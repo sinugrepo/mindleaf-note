@@ -33,6 +33,32 @@ async function settleNoteAfterPush(noteId: string, serverVersion: number): Promi
   });
 }
 
+/**
+ * A create mutation may include edits made while the note was still local
+ * (for example an offline folder rename folded into the POST payload). In
+ * that case the server response is authoritative even though the local
+ * optimistic version was incremented before the POST began. Keep the note
+ * dirty only when another mutation was queued after this create.
+ */
+async function settleCreatedNoteAfterPush(
+  noteId: string,
+  serverVersion: number,
+  mutationId: string,
+): Promise<void> {
+  const newerMutations = await db.pendingMutations
+    .where('resourceId')
+    .equals(noteId)
+    .filter((mutation) => mutation.id !== mutationId)
+    .count();
+  if (newerMutations > 0) return;
+  const local = await db.notes.get(noteId);
+  if (!local) return;
+  await db.notes.update(noteId, {
+    version: serverVersion,
+    dirty: false,
+  });
+}
+
 /** Result of a single push attempt. */
 export type PushResult =
   | { status: 'ok' }
@@ -46,10 +72,12 @@ export type PushResult =
 export async function pushMutation(
   mutation: PendingMutation,
 ): Promise<PushResult> {
-  // Mark in_progress
+  // Mark in_progress before making the request. The drainer persists the
+  // returned retryability classification when the request fails.
   await db.pendingMutations.update(mutation.id, {
     status: 'in_progress',
     attempts: mutation.attempts + 1,
+    retryable: undefined,
   });
 
   try {
@@ -57,8 +85,8 @@ export async function pushMutation(
       case 'create_note': {
         const payload = JSON.parse(mutation.payload);
         const result = await api.createNote(payload);
-        // Update local version from server response.
-        await settleNoteAfterPush(result.id, result.version);
+        // The POST may include offline edits folded into the create payload.
+        await settleCreatedNoteAfterPush(result.id, result.version, mutation.id);
         return { status: 'ok' };
       }
 
@@ -150,7 +178,10 @@ export async function pushMutation(
     }
 
     // Network error or 5xx — retryable
-    const retryable = (e.status ?? 0) >= 500 || e.message.includes('fetch');
+    const retryable = (e.status ?? 0) >= 500 ||
+      e.message.toLowerCase().includes('fetch') ||
+      e.message.toLowerCase().includes('network') ||
+      e.message.toLowerCase().includes('timeout');
     return {
       status: 'failed',
       error: e.message,

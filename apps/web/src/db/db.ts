@@ -38,6 +38,9 @@ export interface PendingMutation {
   attempts: number;
   /** Last error message (for display in the Sync Status modal). */
   lastError: string | null;
+  /** Whether the last failure is safe to retry automatically. Optional for
+   * queue rows created before this field was introduced. */
+  retryable?: boolean;
   /** Current lifecycle status. `remote_missing` is an explicit 404 recovery state; `remote_recovering` is a crash-safe temporary quarantine. */
   status: 'pending' | 'in_progress' | 'failed' | 'conflicted' | 'remote_missing' | 'remote_recovering';
 }

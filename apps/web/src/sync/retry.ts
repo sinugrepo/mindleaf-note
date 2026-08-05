@@ -6,7 +6,7 @@ export async function retryFailedMutations(): Promise<number> {
   if (failed.length === 0) return 0;
   await db.pendingMutations.bulkUpdate(failed.map((mutation) => ({
     key: mutation.id,
-    changes: { status: 'pending' as const, attempts: 0, lastError: null },
+    changes: { status: 'pending' as const, attempts: 0, lastError: null, retryable: undefined },
   })));
   await drainQueue();
   return failed.length;

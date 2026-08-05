@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { db } from '../db/db';
-import { queuedPatchNote } from '../sync/queue';
+import { queuedCreateNote, queuedPatchNote } from '../sync/queue';
 import { withSyncLock } from '../sync/coordination';
 
 beforeEach(async () => {
@@ -46,6 +46,70 @@ describe('sync queue stability', () => {
       version: 9,
       dirty: true,
     });
+  });
+
+  it('folds an offline rename into the pending create instead of queuing a PATCH', async () => {
+    const folder = {
+      id: 'folder-1',
+      parentId: null,
+      title: 'New folder',
+      content: '',
+      order: 1,
+      isExpanded: true,
+      isFolder: true,
+      createdAt: 1,
+      updatedAt: 1,
+      version: 1,
+      dirty: true,
+    };
+    await queuedCreateNote(folder);
+    await queuedPatchNote(folder.id, { title: 'Renamed folder' }, 100);
+
+    const queued = await db.pendingMutations.where('resourceId').equals(folder.id).toArray();
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({ type: 'create_note', status: 'pending', attempts: 0 });
+    expect(JSON.parse(queued[0].payload)).toMatchObject({
+      title: 'Renamed folder',
+      isFolder: true,
+    });
+  });
+
+  it('reactivates a failed patch when a later edit supersedes it', async () => {
+    await db.notes.add({
+      id: 'note-failed',
+      parentId: null,
+      title: 'Original',
+      content: '',
+      order: 1,
+      isExpanded: true,
+      createdAt: 1,
+      updatedAt: 1,
+      version: 3,
+      dirty: true,
+    });
+    await db.pendingMutations.add({
+      id: 'failed-patch',
+      type: 'patch_note',
+      resourceId: 'note-failed',
+      payload: JSON.stringify({ title: 'Old attempt' }),
+      baseVersion: 2,
+      createdAt: 1,
+      attempts: 10,
+      lastError: 'Failed to fetch',
+      status: 'failed',
+    });
+
+    await queuedPatchNote('note-failed', { title: 'Latest edit' }, 100);
+
+    const queued = await db.pendingMutations.where('resourceId').equals('note-failed').toArray();
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({
+      id: 'failed-patch',
+      status: 'pending',
+      attempts: 0,
+      lastError: null,
+    });
+    expect(JSON.parse(queued[0].payload)).toEqual({ title: 'Latest edit' });
   });
 
   it('serializes operations through the IndexedDB lease fallback', async () => {
