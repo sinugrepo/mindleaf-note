@@ -4,6 +4,7 @@ import { users } from './db/schema.js';
 import { eq } from 'drizzle-orm';
 import * as readline from 'node:readline';
 import { stdin, stdout } from 'node:process';
+import { readFileSync } from 'node:fs';
 
 /**
  * Seed script: creates the single Mindleaf user with a master password.
@@ -30,8 +31,14 @@ async function main() {
     process.exit(1);
   }
 
-  // Get password from env or prompt.
+  // Get password from an environment variable, a protected file, or prompt.
+  // The file form lets setup.sh avoid exposing a generated password in the
+  // process command line while remaining fully non-interactive.
   let password = process.env.MINDLEAF_SEED_PASSWORD;
+  const passwordFile = process.env.MINDLEAF_SEED_PASSWORD_FILE;
+  if (!password && passwordFile) {
+    password = readFileSync(passwordFile, 'utf8').trimEnd();
+  }
   if (!password) {
     const rl = readline.createInterface({ input: stdin, output: stdout });
     password = await new Promise<string>((resolve) => {

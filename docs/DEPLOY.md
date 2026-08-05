@@ -83,7 +83,7 @@ Setelah repository tersedia atau `scripts/migrate-vps.sh` diunduh ke VPS baru,
 jalankan satu command sebagai root:
 
 ```bash
-sudo bash scripts/migrate-vps.sh --env-file /root/mindleaf.env
+sudo bash scripts/setup.sh --mode migrate --env-file /root/mindleaf.env
 ```
 
 Command tersebut menjalankan otomatis: install prerequisite, clone repository
@@ -95,13 +95,13 @@ public HTTPS healthcheck.
 Jika DNS belum diarahkan saat provisioning:
 
 ```bash
-sudo bash scripts/migrate-vps.sh --env-file /root/mindleaf.env --skip-public-check
+sudo bash scripts/setup.sh --mode migrate --env-file /root/mindleaf.env --skip-public-check
 ```
 
 Untuk private repository, gunakan source checkout/tarball yang sudah tersedia:
 
 ```bash
-sudo bash scripts/migrate-vps.sh \\
+sudo bash scripts/setup.sh --mode migrate \\
   --source-dir /root/mindleaf-note \\
   --env-file /root/mindleaf.env
 ```
@@ -450,7 +450,7 @@ migrasi data existing karena dapat melewatkan restore R2 atau membuat secret bar
 ```bash
 # Di VPS baru, setelah repository dan .env production lama tersedia:
 cd /root/mindleaf-note
-sudo bash scripts/migrate-vps.sh --env-file /root/mindleaf.env
+sudo bash scripts/setup.sh --mode migrate --env-file /root/mindleaf.env
 ```
 
 Runbook tersebut mengatur urutan clone/source → bootstrap → validasi R2 → restore

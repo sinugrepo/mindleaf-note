@@ -16,7 +16,8 @@
     "lint": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
-    "test:watch": "vitest --watch"
+    "test:watch": "vitest --watch",
+    "validate:deploy": "bash scripts/validate-deploy-scripts.sh"
   },
   "dependencies": {
     "@tailwindcss/typography": "^0.5.20",

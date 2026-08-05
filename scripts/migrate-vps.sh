@@ -95,7 +95,8 @@ fi
 [[ "$PHASE_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || {
     echo "ERROR: --timeout must be a positive integer" >&2
     exit 64
-}[[ "$INSTALL_ROOT" == /* && "$INSTALL_ROOT" != *[!A-Za-z0-9_./-]* ]] || {
+}
+[[ "$INSTALL_ROOT" == /* && "$INSTALL_ROOT" != *[!A-Za-z0-9_./-]* ]] || {
     echo "ERROR: INSTALL_ROOT is invalid" >&2
     exit 64
 }
@@ -220,10 +221,12 @@ timeout --signal=TERM --kill-after=30s "${PHASE_TIMEOUT}s" \
     bash "$INSTALL_ROOT/deploy/scripts/bootstrap.sh"
 
 step "Validating PostgreSQL and object storage"
-RCLONE_REMOTE="${RCLONE_REMOTE:-r2:mindleaf-prod-backups/db}"
+BACKUP_R2_BUCKET="${BACKUP_R2_BUCKET:-mindleaf-prod-backups}"
+BACKUP_R2_PATH="${BACKUP_R2_PATH:-db}"
+RCLONE_REMOTE="${RCLONE_REMOTE:-r2:${BACKUP_R2_BUCKET}/${BACKUP_R2_PATH}}"
 pg_isready -h localhost -p 5432 -U mindleaf -d mindleaf
 RCLONE_CONFIG="$INSTALL_ROOT/.config/rclone/rclone.conf" \
-    rclone lsf --files-only "$RCLONE_REMOTE" >/dev/null
+    rclone lsf --max-depth 1 "r2:$BACKUP_R2_BUCKET" >/dev/null
 log "PostgreSQL and R2 connectivity verified"
 
 if [[ $NO_RESTORE -eq 0 ]]; then
