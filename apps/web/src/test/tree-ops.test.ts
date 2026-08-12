@@ -95,6 +95,15 @@ describe('validateDropTarget', () => {
     const res = validateDropTarget('f1', f2, [f1, f2]);
     expect(res.valid).toBe(true);
   });
+
+  it('rejects dropping into a child folder because child notes cannot have children', () => {
+    const root = makeNote({ id: 'root', isFolder: true, order: 1 });
+    const childFolder = makeNote({ id: 'child-folder', isFolder: true, parentId: 'root', order: 2 });
+    const dragged = makeNote({ id: 'dragged', order: 3 });
+    const res = validateDropTarget('dragged', childFolder, [root, childFolder, dragged]);
+    expect(res.valid).toBe(false);
+    expect(res.reason).toBe('max-depth');
+  });
 });
 
 describe('computeDropUpdates', () => {

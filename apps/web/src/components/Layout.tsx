@@ -1,5 +1,6 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store/useStore';
+import { db } from '../db/db';
 import { Sidebar } from './Sidebar';
 
 const Editor = React.lazy(() =>
@@ -66,6 +67,9 @@ export function Layout({ onLogout }: { onLogout?: () => Promise<void> }) {
 
   const handleNewChildNote = useCallback(async () => {
     if (!activeNoteId) return; // Need an active note to create a child
+    const parent = await db.notes.get(activeNoteId);
+    // Child notes are leaves: only root-level notes can receive a child.
+    if (!parent || parent.parentId !== null) return;
     const note = await createChildNote(activeNoteId, NEW_CHILD_NOTE_TITLE);
     useStore.getState().setActiveNoteId(note.id);
   }, [activeNoteId]);

@@ -67,9 +67,17 @@ export function buildNewNote(opts: CreateNoteOptions): Note {
  * Expand `parentId` if it currently exists and is collapsed, so the new
  * child note is visible in the tree immediately after creation.
  */
-async function expandIfCollapsed(parentId: string): Promise<void> {
+async function assertRootParent(parentId: string): Promise<void> {
   const parent = await db.notes.get(parentId);
-  if (parent && !parent.isExpanded) {
+  if (!parent) {
+    throw new Error(`Cannot create child: parent note "${parentId}" was not found.`);
+  }
+  if (parent.parentId != null) {
+    throw new Error(
+      `Cannot create child: note "${parentId}" is already a child note; nested child notes are not supported.`,
+    );
+  }
+  if (!parent.isExpanded) {
     await queuedPatchNote(parentId, { isExpanded: true });
   }
 }
@@ -95,24 +103,26 @@ export async function createRootFolder(): Promise<Note> {
 }
 
 /**
- * Create a note under `parentId`. Expands the parent if currently collapsed.
- * Returns the created note. Routes through the sync queue.
+ * Create a note under a root-level `parentId`. Expands the parent if
+ * currently collapsed. Child notes are leaves; attempting to create a
+ * nested child throws. Routes through the sync queue.
  */
 export async function createChildNote(
   parentId: string,
   title: string = NEW_CHILD_TITLE,
 ): Promise<Note> {
-  await expandIfCollapsed(parentId);
+  await assertRootParent(parentId);
   const note = buildNewNote({ parentId, title });
   return queuedCreateNote(note);
 }
 
 /**
- * Create a folder under `parentId`. Expands the parent if currently collapsed.
- * Returns the created note. Routes through the sync queue.
+ * Create a folder under a root-level `parentId`. Child folders cannot
+ * become parents of another child. Returns the created note and routes
+ * through the sync queue.
  */
 export async function createChildFolder(parentId: string): Promise<Note> {
-  await expandIfCollapsed(parentId);
+  await assertRootParent(parentId);
   const note = buildNewNote({ parentId, isFolder: true });
   return queuedCreateNote(note);
 }

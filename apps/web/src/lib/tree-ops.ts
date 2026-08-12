@@ -5,7 +5,13 @@ import { Note } from '../types';
  */
 export interface DropValidationResult {
   valid: boolean;
-  reason?: 'not-folder' | 'self-drop' | 'descendant' | 'missing-id' | 'missing-note';
+  reason?:
+    | 'not-folder'
+    | 'max-depth'
+    | 'self-drop'
+    | 'descendant'
+    | 'missing-id'
+    | 'missing-note';
 }
 
 /**
@@ -13,6 +19,7 @@ export interface DropValidationResult {
  * - The target is not a folder
  * - The dragged id matches the target id (self-drop)
  * - The target folder is itself a descendant of the dragged note (would create a cycle)
+ * - The target is already a child (the supported hierarchy is root -> child)
  * - The dragged id is missing/empty
  */
 export function validateDropTarget(
@@ -48,6 +55,11 @@ export function validateDropTarget(
     }
     const parent: Note | undefined = byId.get(currentParent);
     currentParent = parent?.parentId ?? null;
+  }
+  // Notes use a two-level hierarchy: root -> child. A child folder is
+  // still a valid existing row, but it cannot become a parent itself.
+  if (target.parentId !== null) {
+    return { valid: false, reason: 'max-depth' };
   }
   return { valid: true };
 }

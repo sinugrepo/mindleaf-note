@@ -253,21 +253,26 @@ describe('createChildFolder (db-backed)', () => {
 
     expect((await db.notes.get(parent.id))?.isExpanded).toBe(true);
   });
+
+  it('refuses to create a nested child folder', async () => {
+    const parent = await createRootFolder();
+    const child = await createChildNote(parent.id);
+
+    await expect(createChildFolder(child.id)).rejects.toThrow(
+      /nested child notes are not supported/i,
+    );
+  });
 });
 
 describe('integration: parent at depth > 0', () => {
-  it('createChildNote under a grand-child-level parent works against fake-indexeddb', async () => {
-    // Confirms the helper's parentId is honored verbatim, not normalized
-    // to / pressed from any tree structure.
+  it('refuses to create a nested child under an existing child note', async () => {
     const grand = await createRootNote('Grand');
     const middle = await createChildNote(grand.id, 'Middle');
-    // `middle` is already expanded by createChildNote; no further update
-    // needed before adding the leaf.
-    const leaf = await createChildNote(middle.id, 'Leaf');
 
-    const fromDb = await db.notes.get(leaf.id);
-    expect(fromDb?.parentId).toBe(middle.id);
-    expect(fromDb?.title).toBe('Leaf');
+    await expect(createChildNote(middle.id, 'Leaf')).rejects.toThrow(
+      /nested child notes are not supported/i,
+    );
+    expect(await db.notes.where('parentId').equals(middle.id).count()).toBe(0);
   });
 });
 
@@ -306,7 +311,10 @@ describe('softDeleteNote', () => {
   it('recursively stamps deletedAt on descendants', async () => {
     const root = await createRootNote('root');
     const child = await createChildNote(root.id, 'child');
-    const grandchild = await createChildNote(child.id, 'grand');
+    // Seed a legacy nested row directly to verify recursive trash handling
+    // without using the guarded creation helper.
+    const grandchild = buildNewNote({ parentId: child.id, title: 'grand', now: 3 });
+    await db.notes.add(grandchild);
     const now = 1_700_000_000_000;
     await softDeleteNote(root.id, now);
 
@@ -419,7 +427,10 @@ describe('permanentlyDeleteNote', () => {
   it('hard-deletes the target note and its descendants', async () => {
     const root = await createRootNote();
     const child = await createChildNote(root.id);
-    const grand = await createChildNote(child.id);
+    // Preserve coverage for purging a legacy nested row while keeping new
+    // child creation constrained to one level.
+    const grand = buildNewNote({ parentId: child.id, title: 'grand', now: 3 });
+    await db.notes.add(grand);
     await softDeleteNote(root.id, 1000);
     const purged = await permanentlyDeleteNote(root.id);
     expect(purged).toBe(3);

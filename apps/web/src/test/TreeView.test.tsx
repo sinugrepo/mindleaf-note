@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 
 vi.mock('../sync/queue', () => ({
   queuedPatchNote: vi.fn().mockResolvedValue(undefined),
@@ -191,10 +191,30 @@ describe('TreeView (smoke)', () => {
       const row = screen.getByText('Aye').closest('.group') as HTMLElement;
       fireEvent.contextMenu(row, { clientX: 120, clientY: 80 });
 
-      expect(screen.getByRole('menu', { name: /Actions for Aye/i })).toBeInTheDocument();
+      const menu = screen.getByRole('menu', { name: /Actions for Aye/i });
+      expect(menu).toBeInTheDocument();
+      expect(menu.parentElement).toBe(document.body);
       expect(screen.getByRole('menuitem', { name: /Add Child Note/i })).toBeInTheDocument();
       expect(screen.getByRole('menuitem', { name: /Add Folder/i })).toBeInTheDocument();
       expect(useStore.getState().activeNoteId).toBe('a');
+    });
+
+    it('does not offer nested child creation for a child note, while its action menu remains usable', () => {
+      seedNotes([
+        makeNote({ id: 'root', title: 'Root', isFolder: true, isExpanded: true, order: 1 }),
+        makeNote({ id: 'child', title: 'Child', parentId: 'root', order: 2 }),
+      ]);
+      render(<TreeView />);
+
+      const childRow = screen.getByText('Child').closest('[role="treeitem"]') as HTMLElement;
+      fireEvent.click(within(childRow).getByRole('button', { name: 'Open note actions' }));
+
+      const menu = screen.getByRole('menu', { name: /Actions for Child/i });
+      expect(menu).toBeInTheDocument();
+      expect(menu.parentElement).toBe(document.body);
+      expect(within(menu).queryByRole('menuitem', { name: /Add Child Note/i })).not.toBeInTheDocument();
+      expect(within(menu).queryByRole('menuitem', { name: /Add Folder/i })).not.toBeInTheDocument();
+      expect(within(menu).getByRole('menuitem', { name: 'Rename' })).toBeInTheDocument();
     });
 
     it('supports keyboard navigation and Escape in the action menu', () => {

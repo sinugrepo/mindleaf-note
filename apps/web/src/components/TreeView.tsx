@@ -5,6 +5,7 @@ import React, {
   useEffect,
   memo,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
 import { Note } from '../types';
@@ -377,6 +378,9 @@ function TreeRowImpl({ item, flatNotes, allNotesForOps, moveSupportMap }: TreeRo
   );
 
   const isActive = activeNoteId === note.id;
+  // The hierarchy intentionally stops at root -> child. Keep the rule
+  // local to the row so child menus cannot offer a misleading action.
+  const canAddChildren = depth === 0;
 
   // The parent virtualizer scrolls the active row into view first. Once the
   // row is mounted, this effect gives keyboard users a stable focus target
@@ -627,6 +631,7 @@ function TreeRowImpl({ item, flatNotes, allNotesForOps, moveSupportMap }: TreeRo
 
   const addChild = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (!canAddChildren) return;
     const newNote = await createChildNote(note.id);
     setActiveNoteId(newNote.id);
     setContextMenuOpen(false);
@@ -634,6 +639,7 @@ function TreeRowImpl({ item, flatNotes, allNotesForOps, moveSupportMap }: TreeRo
 
   const addChildFolder = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (!canAddChildren) return;
     const newNote = await createChildFolder(note.id);
     setActiveNoteId(newNote.id);
     setContextMenuOpen(false);
@@ -703,7 +709,7 @@ function TreeRowImpl({ item, flatNotes, allNotesForOps, moveSupportMap }: TreeRo
         data-tree-row-id={note.id}
 
         className={cn(
-          'group flex items-center pr-2 cursor-pointer select-none border border-transparent text-sm transition-all',
+          'group flex w-full min-w-0 items-center pr-2 cursor-pointer select-none border border-transparent text-sm transition-all',
           isActive
             ? 'bg-blue-100/50 dark:bg-blue-900/30 text-blue-900 dark:text-blue-100 font-medium'
             : 'text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800/50',
@@ -759,7 +765,7 @@ function TreeRowImpl({ item, flatNotes, allNotesForOps, moveSupportMap }: TreeRo
         </span>
 
         {/* Context Actions Hover */}
-        <div className="flex items-center shrink-0 relative">
+        <div className="relative z-10 flex items-center shrink-0">
           <button
             ref={contextMenuButtonRef}
             onClick={(e) => {
@@ -772,12 +778,12 @@ function TreeRowImpl({ item, flatNotes, allNotesForOps, moveSupportMap }: TreeRo
             aria-haspopup="menu"
             aria-expanded={contextMenuOpen}
             type="button"
-            className="p-1 text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+            className="shrink-0 p-1 text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
           >
             <MoreVertical className="w-3.5 h-3.5" />
           </button>
 
-          {contextMenuOpen && (
+          {contextMenuOpen && typeof document !== 'undefined' && createPortal(
             <div
               ref={contextMenuRef}
               role="menu"
@@ -787,23 +793,27 @@ function TreeRowImpl({ item, flatNotes, allNotesForOps, moveSupportMap }: TreeRo
               className="fixed w-44 py-1 bg-white/95 dark:bg-zinc-800/95 backdrop-blur-md rounded-lg shadow-[0_8px_30px_-8px_rgba(0,0,0,0.3)] border border-zinc-200/80 dark:border-zinc-700/70 z-[100] text-xs"
               style={{ left: contextMenuPosition.x, top: contextMenuPosition.y }}
             >
-              <button
-                onClick={addChildFolder}
-                role="menuitem"
-                type="button"
-                className="w-full text-left px-3 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center"
-              >
-                <FolderPlus className="w-3 h-3 mr-2" /> Add Folder
-              </button>
-              <button
-                onClick={addChild}
-                role="menuitem"
-                type="button"
-                className="w-full text-left px-3 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center"
-              >
-                <CornerDownRight className="w-3 h-3 mr-2" /> Add Child
-                Note
-              </button>
+              {canAddChildren && (
+                <>
+                  <button
+                    onClick={addChildFolder}
+                    role="menuitem"
+                    type="button"
+                    className="w-full text-left px-3 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center"
+                  >
+                    <FolderPlus className="w-3 h-3 mr-2" /> Add Folder
+                  </button>
+                  <button
+                    onClick={addChild}
+                    role="menuitem"
+                    type="button"
+                    className="w-full text-left px-3 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 flex items-center"
+                  >
+                    <CornerDownRight className="w-3 h-3 mr-2" /> Add Child
+                    Note
+                  </button>
+                </>
+              )}
               {canMoveUp && (
                 <button
                   onClick={moveUp}
@@ -841,7 +851,8 @@ function TreeRowImpl({ item, flatNotes, allNotesForOps, moveSupportMap }: TreeRo
               >
                 Delete
               </button>
-            </div>
+            </div>,
+            document.body,
           )}
         </div>
       </div>
