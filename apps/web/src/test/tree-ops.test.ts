@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   validateDropTarget,
   computeDropUpdates,
+  validateRootDropTarget,
+  computeRootDropUpdates,
   findMoveSibling,
   computeOrderSwap,
   collectDescendants,
@@ -134,6 +136,38 @@ describe('computeDropUpdates', () => {
     const dragged = makeNote({ id: 'd', order: 5 });
     const updates = computeDropUpdates('d', folder, [folder, dragged], 1000);
     expect(updates.target).toBeNull();
+  });
+});
+
+describe('root drop', () => {
+  it('accepts a child note as a root drop source', () => {
+    const folder = makeNote({ id: 'folder', isFolder: true, order: 1 });
+    const child = makeNote({ id: 'child', parentId: 'folder', order: 2 });
+    expect(validateRootDropTarget('child', [folder, child])).toEqual({ valid: true });
+  });
+
+  it('rejects a stale root drop source', () => {
+    expect(validateRootDropTarget('missing', [])).toEqual({
+      valid: false,
+      reason: 'missing-note',
+    });
+  });
+
+  it('moves a child after the existing root siblings', () => {
+    const folder = makeNote({ id: 'folder', isFolder: true, order: 10 });
+    const child = makeNote({ id: 'child', parentId: 'folder', order: 20 });
+    const rootNote = makeNote({ id: 'root-note', order: 100 });
+    expect(computeRootDropUpdates('child', [folder, child, rootNote], 5000)).toEqual({
+      dragged: { parentId: null, order: 110 },
+    });
+  });
+
+  it('uses now as the root order base when no other root sibling exists', () => {
+    const folder = makeNote({ id: 'folder', isFolder: true, order: 10 });
+    const child = makeNote({ id: 'child', parentId: 'folder', order: 20 });
+    expect(computeRootDropUpdates('folder', [folder, child], 5000)).toEqual({
+      dragged: { parentId: null, order: 5010 },
+    });
   });
 });
 

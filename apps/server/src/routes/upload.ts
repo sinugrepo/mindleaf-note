@@ -10,7 +10,7 @@ import {
   presignGet,
   headR2Object,
   generateR2Key,
-} from '../r2.js';
+} from '../services/r2.js';
 import { rateLimit } from '../middleware/ratelimit.js';
 import {
   bodySizeLimit,
@@ -26,7 +26,7 @@ import {
   presignRequestSchema,
   isAllowedUploadMime,
 } from '../lib/upload-validation.js';
-import type { AppEnv } from '../env.js';
+import type { AppEnv } from '../config/env.js';
 
 export const uploadRoutes = new Hono<AppEnv>();
 
@@ -174,8 +174,8 @@ uploadRoutes.post('/attachments/:id/complete', async (c) => {
     return c.json({ error: 'Attachment storage is not configured' }, 503);
   }
   if (!isAllowedUploadMime(rows[0].mime)) {
-      return c.json({ error: 'Attachment type is no longer allowed' }, 422);
-    }
+    return c.json({ error: 'Attachment type is no longer allowed' }, 422);
+  }
 
   // Confirm the object exists and record the authoritative byte count.
   // A client cannot mark an upload complete merely by calling this route.

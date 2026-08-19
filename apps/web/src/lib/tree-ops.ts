@@ -74,12 +74,47 @@ export function computeDropUpdates(
   allNotes: Note[],
   now: number = Date.now(),
 ): { dragged: Partial<Note>; target: Partial<Note> | null } {
-  const kids = allNotes.filter((n) => n.parentId === target.id);
+  const kids = allNotes.filter((n) => n.parentId === target.id && n.id !== draggedId);
   const maxOrder = kids.length > 0 ? Math.max(...kids.map((k) => k.order)) : now;
   return {
     dragged: { parentId: target.id, order: maxOrder + 10 },
     target: target.isExpanded ? null : { isExpanded: true },
   };
+}
+
+/**
+ * Validates moving a note back to the root level. The root is not a note,
+ * so it cannot use `validateDropTarget`'s folder/cycle checks.
+ */
+export function validateRootDropTarget(
+  draggedId: string | null | undefined,
+  allNotes: Note[],
+): DropValidationResult {
+  if (!draggedId) {
+    return { valid: false, reason: 'missing-id' };
+  }
+  if (!allNotes.some((note) => note.id === draggedId)) {
+    return { valid: false, reason: 'missing-note' };
+  }
+  return { valid: true };
+}
+
+/**
+ * Returns the updates needed to move a note to the root level. Root siblings
+ * are ordered independently from children inside folders.
+ */
+export function computeRootDropUpdates(
+  draggedId: string,
+  allNotes: Note[],
+  now: number = Date.now(),
+): { dragged: Partial<Note> } {
+  const rootSiblings = allNotes.filter(
+    (note) => note.parentId === null && note.id !== draggedId,
+  );
+  const maxOrder = rootSiblings.length > 0
+    ? Math.max(...rootSiblings.map((note) => note.order))
+    : now;
+  return { dragged: { parentId: null, order: maxOrder + 10 } };
 }
 
 /**

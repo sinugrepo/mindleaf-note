@@ -6,8 +6,12 @@
 #     chmod 644 (cron.d files must not be group-writable or world-writable,
 #     else cron refuses to install them).
 #
-# Cadence: 03:00 UTC daily. Off-peak for the single-user app; aligns with
-# typical Cloudflare R2 free-tier write quota reset window.
+# Cadence: 07:00 WIB daily. CRON_TZ is explicit because the VPS timezone
+# (Asia/Shanghai) is not the application owner's timezone (Asia/Jakarta).
+#
+# Telegram is alert-only: the dump remains in R2 and Telegram is contacted
+# only when the backup or retention step reports an anomaly. Configure
+# TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in /opt/mindleaf/.env.
 #
 # Log destinations:
 #   - stdout → /var/log/mindleaf-backup.log (rotated by syslog)
@@ -16,6 +20,7 @@
 # =============================================================================
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Asia/Jakarta
 MAILTO=""
 
-0 3 * * *  mindleaf  INSTALL_ROOT=/opt/mindleaf /opt/mindleaf/scripts/backup.sh >> /var/log/mindleaf-backup.log 2>&1
+0 7 * * *  mindleaf  INSTALL_ROOT=/opt/mindleaf /opt/mindleaf/deploy/scripts/backup.sh >> /var/log/mindleaf-backup.log 2>&1

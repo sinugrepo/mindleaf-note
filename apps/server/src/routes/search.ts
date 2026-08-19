@@ -2,10 +2,10 @@ import { Hono } from 'hono';
 import { db, pgClient } from '../db/index.js';
 import { notes } from '../db/schema.js';
 import { sql } from 'drizzle-orm';
-import { decrypt } from '../crypto.js';
+import { decrypt } from '../services/crypto.js';
 import { searchQuerySchema } from '../lib/request-schemas.js';
 import type { NoteDTO } from '@mindleaf/shared';
-import type { AppEnv } from '../env.js';
+import type { AppEnv } from '../config/env.js';
 
 export const searchRoutes = new Hono<AppEnv>();
 

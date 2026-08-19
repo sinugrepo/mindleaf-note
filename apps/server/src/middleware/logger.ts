@@ -1,7 +1,7 @@
 import pino from 'pino';
 import type { MiddlewareHandler } from 'hono';
 import { randomUUID } from 'node:crypto';
-import type { AppEnv } from '../env.js';
+import type { AppEnv } from '../config/env.js';
 
 /**
  * Phase 10 — Structured JSON access logging via Pino.

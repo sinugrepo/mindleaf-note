@@ -4,11 +4,11 @@ import { notes, attachments, tombstones } from '../db/schema.js';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { noteCreateRequestSchema, notePatchRequestSchema, uuidSchema } from '../lib/request-schemas.js';
 import { noteOwnedBy, attachmentOwnedBy, tombstoneOwnedBy } from '../lib/ownership.js';
-import { encrypt, decrypt } from '../crypto.js';
+import { encrypt, decrypt } from '../services/crypto.js';
 import { randomUUID } from 'node:crypto';
-import { htmlToPlaintext } from '../html-to-text.js';
+import { htmlToPlaintext } from '../lib/html-to-text.js';
 import type { NoteDTO } from '@mindleaf/shared';
-import type { AppEnv } from '../env.js';
+import type { AppEnv } from '../config/env.js';
 
 // ----------------------------------------------------------------------------
 // Phase 6 — tsvector recompilation note
@@ -150,7 +150,7 @@ notesRoutes.post('/', async (c) => {
   // this, a note recreated with the same stable ID could be deleted again by
   // the next delta pull because its old tombstone would still be present.
   const row = await db.transaction(async (tx) => {
-      const [created] = await tx
+    const [created] = await tx
       .insert(notes)
       .values({
         id,
@@ -319,7 +319,8 @@ notesRoutes.delete('/:id', async (c) => {
       deletedAt: now,
       updatedAt: now,
       version: sql`${notes.version} + 1`,
-    })      .where(and(inArray(notes.id, ids), noteOwnedBy(userId)));
+    })
+    .where(and(inArray(notes.id, ids), noteOwnedBy(userId)));
 
   return c.json({ ok: true, deleted: ids.length });
 });

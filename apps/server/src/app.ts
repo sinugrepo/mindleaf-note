@@ -14,7 +14,7 @@ import { db } from './db/index.js';
 import { users, notes } from './db/schema.js';
 import { and, count, eq } from 'drizzle-orm';
 import { noteOwnedBy } from './lib/ownership.js';
-import type { AppEnv } from './env.js';
+import type { AppEnv } from './config/env.js';
 
 /**
  * Build the HTTP application without binding a TCP listener. Keeping this

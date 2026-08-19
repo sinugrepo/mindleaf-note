@@ -13,6 +13,8 @@ import { useStore } from '../store/useStore';
 import {
   validateDropTarget,
   computeDropUpdates,
+  validateRootDropTarget,
+  computeRootDropUpdates,
   computeOrderSwap,
   flattenTree,
   buildMoveSupportMap,
@@ -270,6 +272,48 @@ function VirtualizedFlatList({
     : Math.min(flatNotes.length, startIndex + visibleCount);
 
   const slice = flatNotes.slice(startIndex, endIndex);
+  const [isDraggingNote, setIsDraggingNote] = useState(false);
+  const [isRootDragOver, setIsRootDragOver] = useState(false);
+
+  const handleRootDragOver = (e: React.DragEvent) => {
+    if (!isDraggingNote) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsRootDragOver(true);
+  };
+
+  const handleRootDragLeave = (e: React.DragEvent) => {
+    e.stopPropagation();
+    // `relatedTarget` prevents a drag over the root drop area from
+    // flickering when the pointer crosses one of its child elements.
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      setIsRootDragOver(false);
+    }
+  };
+
+  const handleRootDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsRootDragOver(false);
+    setIsDraggingNote(false);
+
+    const draggedNoteId = e.dataTransfer.getData('text/plain');
+    const validation = validateRootDropTarget(draggedNoteId, allNotesForOps);
+    if (!validation.valid) return;
+
+    const updates = computeRootDropUpdates(draggedNoteId, allNotesForOps);
+    await queuedPatchNote(draggedNoteId, {
+      parentId: updates.dragged.parentId,
+      order: updates.dragged.order,
+    });
+  };
+
+  const rootDropTargetClassName = cn(
+    'mx-1 min-h-8 rounded border border-dashed transition-colors',
+    isRootDragOver
+      ? 'border-blue-400 bg-blue-50/70 dark:border-blue-500 dark:bg-blue-900/30'
+      : 'border-transparent',
+  );
 
   // Scroll the active row into view when activeNoteId changes (e.g.
   // user clicked a search result). We compute scrollTop from the flat
@@ -297,6 +341,9 @@ function VirtualizedFlatList({
     <div
       ref={containerRef}
       className="h-full overflow-y-auto"
+      onDragOver={handleRootDragOver}
+      onDragLeave={handleRootDragLeave}
+      onDrop={handleRootDrop}
       role="tree"
       aria-label="Notes tree"
       data-testid="treeview-scroll-container"
@@ -323,10 +370,25 @@ function VirtualizedFlatList({
               flatNotes={flatNotes}
               allNotesForOps={allNotesForOps}
               moveSupportMap={moveSupportMap}
+              onDragStateChange={setIsDraggingNote}
             />
           </div>
         ))}
       </div>
+      {isDraggingNote && (
+        <div
+          data-testid="root-drop-target"
+          aria-label="Drop note here to move it to root"
+          className={rootDropTargetClassName}
+          onDragOver={handleRootDragOver}
+          onDragLeave={handleRootDragLeave}
+          onDrop={handleRootDrop}
+        >
+          <span className="flex h-8 items-center justify-center text-[10px] text-blue-600 dark:text-blue-300">
+            {isRootDragOver ? 'Drop here to move to root' : 'Drag here to move to root'}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -346,9 +408,16 @@ interface TreeRowProps {
   allNotesForOps: Note[];
   /** Precomputed move-support map; see VirtualizedFlatListProps. */
   moveSupportMap: Map<string, MoveSupport>;
+  onDragStateChange: (dragging: boolean) => void;
 }
 
-function TreeRowImpl({ item, flatNotes, allNotesForOps, moveSupportMap }: TreeRowProps) {
+function TreeRowImpl({
+  item,
+  flatNotes,
+  allNotesForOps,
+  moveSupportMap,
+  onDragStateChange,
+}: TreeRowProps) {
   const { activeNoteId, setActiveNoteId, selectedNoteIds, toggleNoteSelection } = useStore();
   const { note, depth, hasChildren, isOpened } = item;
 
@@ -395,13 +464,23 @@ function TreeRowImpl({ item, flatNotes, allNotesForOps, moveSupportMap }: TreeRo
   // drag session across the unmount.
   const handleDragStart = (e: React.DragEvent) => {
     e.stopPropagation();
+    e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', note.id);
+    onDragStateChange(true);
+  };
+
+  const handleDragEnd = (e: React.DragEvent) => {
+    e.stopPropagation();
+    onDragStateChange(false);
   };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (note.isFolder && e.dataTransfer.types.includes('text/plain')) {
+    if (note.isFolder) {
+      // Do not rely on `dataTransfer.types` here. Some browsers expose the
+      // custom MIME type only at drop time, which otherwise hides the drop
+      // affordance for a valid child-note move.
       setIsDragOver(true);
     }
   };
@@ -696,6 +775,7 @@ function TreeRowImpl({ item, flatNotes, allNotesForOps, moveSupportMap }: TreeRo
         ref={rowRef}
         draggable
         onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}

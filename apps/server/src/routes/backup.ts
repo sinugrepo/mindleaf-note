@@ -2,14 +2,14 @@ import { Hono } from 'hono';
 import { db } from '../db/index.js';
 import { notes, attachments, tombstones } from '../db/schema.js';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { encrypt, decrypt } from '../crypto.js';
-import { htmlToPlaintext } from '../html-to-text.js';
+import { encrypt, decrypt } from '../services/crypto.js';
+import { htmlToPlaintext } from '../lib/html-to-text.js';
 import {
   s3Client,
   presignPut,
   generateR2Key,
   getR2Object,
-} from '../r2.js';
+} from '../services/r2.js';
 import { rateLimit } from '../middleware/ratelimit.js';
 import {
   bodySizeLimit,
@@ -28,7 +28,7 @@ import {
 } from '../lib/upload-validation.js';
 import { noteOwnedBy, attachmentOwnedBy, tombstoneOwnedBy } from '../lib/ownership.js';
 import { backupPayloadSchema } from '../lib/request-schemas.js';
-import type { AppEnv } from '../env.js';
+import type { AppEnv } from '../config/env.js';
 
 export const backupRoutes = new Hono<AppEnv>();
 

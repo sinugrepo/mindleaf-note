@@ -4,7 +4,7 @@ import { getCookie, setCookie } from 'hono/cookie';
 import { db } from '../db/index.js';
 import { sessions } from '../db/schema.js';
 import { eq, and, gt } from 'drizzle-orm';
-import type { AppEnv } from '../env.js';
+import type { AppEnv } from '../config/env.js';
 
 /**
  * Session cookie name. The cookie value is `<base64(hmac)>.<session_id>`

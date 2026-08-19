@@ -23,7 +23,7 @@ dua fase besar: **(A) one-time VPS provisioning** (jalan sekali per VPS) dan
  │  │   proxy+SPA  │    │   mindleaf   │    │   (NOT dockerized) │   │
  │  └──────────────┘    └──────────────┘    └───────────────────┘   │
  │                                                                    │
- │  Cron: 03:00 UTC daily ──► pg_dump -Fc ──► rclone ──► R2 bucket   │
+ │  Cron: 07:00 WIB daily ──► pg_dump -Fc ──► rclone ──► R2 bucket   │
  └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -324,7 +324,28 @@ scripts/deploy.sh
 
 Build pertama sekitar 2–3 menit (termasuk `npm ci`); deploy berikutnya biasanya jauh lebih cepat karena install dilewati bila manifest tidak berubah. Backend downtime ~5–10 detik selama restart (roll-window). Tidak zero-downtime — itu acceptable karena single-user app; user tinggal refresh browser kalau barusan logout.
 
-### 3.2 Skip DB migration (kalau yakini schema tidak berubah)
+### 3.2 Wrapper restart manual dengan logging
+
+Untuk perubahan aplikasi biasa yang tidak menyentuh schema database, gunakan
+wrapper ini:
+
+```bash
+cd /home/sinug/mindleaf-note
+sudo bash scripts/restart.sh
+```
+
+Wrapper menjalankan `scripts/deploy.sh --no-migrate`, menampilkan seluruh output
+di terminal, dan menyimpan log bertimestamp di `/var/log/mindleaf/restart-*.log`.
+Jika direktori tersebut tidak dapat ditulis, log fallback disimpan di
+`.restart-logs/` pada checkout. Override lokasi log dengan:
+
+```bash
+sudo MINDLEAF_RESTART_LOG_DIR=/var/log/mindleaf bash scripts/restart.sh
+```
+
+### 3.3 Skip DB migration (kalau yakini schema tidak berubah)
+
+Perintah langsung yang dipanggil wrapper:
 
 ```bash
 cd /home/sinug/mindleaf-note
@@ -334,7 +355,7 @@ scripts/deploy.sh --no-migrate
 Hemat ~30 detik dan menghindari false-positive error kalau db:push menolak perubahan
 trivial (e.g. existing table).
 
-### 3.3 Rollback ke versi sebelumnya
+### 3.4 Rollback ke versi sebelumnya
 
 ```bash
 # Restore release runtime paling baru:
@@ -394,8 +415,9 @@ sudo systemctl mask mindleaf
 sudo systemctl status cron && systemctl list-timers | grep mindleaf
 
 # 2. Manual trigger (test backup flow end-to-end):
-sudo -u mindleaf /opt/mindleaf/scripts/backup.sh
+sudo -u mindleaf /opt/mindleaf/deploy/scripts/backup.sh
 # expect: "acquired lock" → "pg_dump ok (size=...)" → "rclone ok" → "retention sweep ok"
+# Telegram is alert-only; it sends a message only if a backup/retention anomaly occurs.
 
 # 3. List backup di R2:
 sudo -u mindleaf RCLONE_CONFIG=/opt/mindleaf/.config/rclone/rclone.conf \
@@ -406,7 +428,30 @@ sudo -u mindleaf RCLONE_CONFIG=/opt/mindleaf/.config/rclone/rclone.conf \
   rclone lsjson r2:mindleaf-prod-backups/db/<date>-mindleaf-<timestamp>.dump
 ```
 
-Cadence: **03:00 UTC** daily (`/etc/cron.d/mindleaf-backup`). Retention: 30 hari.
+Cadence: **07:00 WIB (`Asia/Jakarta`)** daily (`/etc/cron.d/mindleaf-backup`). Retention: 30 hari. R2 remains the primary backup; Telegram is alert-only and requires `TELEGRAM_BOT_TOKEN` plus `TELEGRAM_CHAT_ID` in `/opt/mindleaf/.env`.
+
+### 3.7 Konfigurasi Telegram alert
+
+Buat bot privat melalui `@BotFather`, kirim `/start` dari chat tujuan, lalu
+simpan credential hanya di `/opt/mindleaf/.env` dengan permission `0600`:
+
+```env
+TELEGRAM_BOT_TOKEN=<token dari BotFather>
+TELEGRAM_CHAT_ID=<id chat privat>
+```
+
+Backup tidak mengirim dump database ke Telegram. Saat `pg_dump`, upload/verifikasi
+R2, atau retention mengalami anomali, script mengirim alert singkat melalui
+Telegram Bot API. Pengiriman memiliki retry dan timeout; kegagalan Telegram
+sendiri tetap dicatat ke journald dan `/var/log/mindleaf-backup.log`.
+
+Setelah env diisi, verifikasi konfigurasi tanpa mencetak token:
+
+```bash
+sudo stat -c '%a %U:%G %n' /opt/mindleaf/.env
+# expect: 600 mindleaf:mindleaf /opt/mindleaf/.env
+sudo -u mindleaf /opt/mindleaf/deploy/scripts/backup.sh
+```
 
 ---
 
@@ -492,7 +537,7 @@ hilang setelah snapshot backup dibuat.
 | `/var/www/mindleaf/dist/` | `mindleaf:mindleaf` | `755` | Frontend Vite output (staged locally) |
 | `/etc/caddy/Caddyfile` | `root:root` | `644` | Caddy reverse-proxy + SPA fallback |
 | `/etc/systemd/system/mindleaf.service` | `root:root` | `644` | Hardened systemd unit |
-| `/etc/cron.d/mindleaf-backup` | `root:root` | `644` | Daily 03:00 UTC backup trigger |
+| `/etc/cron.d/mindleaf-backup` | `root:root` | `644` | Daily 07:00 WIB backup trigger + Telegram anomaly alerts |
 | `/var/log/mindleaf-backup.log` | `syslog:adm` | `640` | Backup stdout/stderr (syslog-rotated) |
 | `/var/lock/mindleaf-backup.lock` | — | — | `flock` lock file untuk mencegah concurrent backups |
 
@@ -578,7 +623,7 @@ journalctl -u mindleaf -p err -n 50
 sudo systemctl status cron
 
 # Test manual:
-sudo -u mindleaf /opt/mindleaf/scripts/backup.sh
+sudo -u mindleaf /opt/mindleaf/deploy/scripts/backup.sh
 
 # Cek last run stderr:
 journalctl -t mindleaf-backup -n 20
@@ -649,7 +694,7 @@ Kalau sering OOM, biasanya karena:
 
 - Postgres RAM-bound state (caching tables besar) → cek `MemoryHigh=` mungkin di-bump.
 - Backup concurrent `pg_dump` aktif saat backend lagi encode banyak images → spread
-  ke window cron setelah 03:00 UTC jika traffic peaks di morning.
+  ke window cron setelah 07:00 WIB jika traffic peaks di morning.
 
 ---
 
@@ -662,7 +707,7 @@ Kalau sering OOM, biasanya karena:
 | **Backend** | Node 22 + Hono di `:8787`, systemd `mindleaf.service` | `mindleaf:mindleaf` |
 | **Database** | PostgreSQL 16 apt-installed, db `mindleaf`, role `mindleaf` | Debian default |
 | **Object storage** | Cloudflare R2 buckets `mindleaf-prod` (attachments) + `mindleaf-prod-backups` (db dumps) | Cloudflare account |
-| **Backup** | Cron daily 03:00 → `pg_dump -Fc` → `rclone copyto` → R2 dengan retention sweep 30 hari | `mindleaf:mindleaf` |
+| **Backup** | Cron daily 07:00 WIB (`Asia/Jakarta`) → `pg_dump -Fc` → `rclone copyto` → R2 dengan retention sweep 30 hari; Telegram hanya untuk alert anomali | `mindleaf:mindleaf` |
 | **Logs** | Pino JSON → journald → `journalctl -u mindleaf` | `journal` |
 | **Observability** | Zero 3rd-party. journald only. | — |
 | **Security headers** | Caddy site-level `header {}` block (CSP + HSTS + nosniff + XFO + etc) | `root:root` |

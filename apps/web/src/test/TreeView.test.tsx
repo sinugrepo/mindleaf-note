@@ -184,6 +184,90 @@ describe('TreeView (smoke)', () => {
       expect(queuedPatchNote).toHaveBeenCalledWith('folder', { isExpanded: true });
     });
 
+    it('moves a child note into another root folder', async () => {
+      const sourceFolder = makeNote({
+        id: 'source-folder',
+        title: 'Source Folder',
+        isFolder: true,
+        isExpanded: true,
+        order: 1,
+      });
+      const child = makeNote({
+        id: 'child',
+        title: 'Child',
+        parentId: 'source-folder',
+        order: 2,
+      });
+      const targetFolder = makeNote({
+        id: 'target-folder',
+        title: 'Target Folder',
+        isFolder: true,
+        isExpanded: false,
+        order: 3,
+      });
+      seedNotes([sourceFolder, child, targetFolder]);
+      render(<TreeView />);
+
+      const source = screen.getByText('Child').closest('.group') as HTMLElement;
+      const target = screen.getByText('Target Folder').closest('.group') as HTMLElement;
+      const dataTransfer = {
+        types: ['text/plain'],
+        setData: vi.fn(),
+        getData: vi.fn(() => 'child'),
+      };
+
+      fireEvent.dragStart(source, { dataTransfer });
+      fireEvent.drop(target, { dataTransfer });
+
+      await vi.waitFor(() => {
+        expect(queuedPatchNote).toHaveBeenCalledWith(
+          'child',
+          expect.objectContaining({ parentId: 'target-folder' }),
+        );
+      });
+      expect(queuedPatchNote).toHaveBeenCalledWith('target-folder', { isExpanded: true });
+    });
+
+    it('moves a child note out of a folder when dropped on the root drop target', async () => {
+      const folder = makeNote({
+        id: 'folder',
+        title: 'Folder',
+        isFolder: true,
+        isExpanded: true,
+        order: 1,
+      });
+      const child = makeNote({
+        id: 'child',
+        title: 'Child',
+        parentId: 'folder',
+        order: 2,
+      });
+      const rootNote = makeNote({ id: 'root-note', title: 'Root Note', order: 100 });
+      seedNotes([folder, child, rootNote]);
+      render(<TreeView />);
+
+      const source = screen.getByText('Child').closest('.group') as HTMLElement;
+      expect(screen.queryByTestId('root-drop-target')).not.toBeInTheDocument();
+      const dataTransfer = {
+        types: ['text/plain'],
+        setData: vi.fn(),
+        getData: vi.fn(() => 'child'),
+      };
+
+      fireEvent.dragStart(source, { dataTransfer });
+      const rootDropTarget = screen.getByTestId('root-drop-target');
+      expect(rootDropTarget).toBeInTheDocument();
+      fireEvent.drop(rootDropTarget, { dataTransfer });
+
+      await vi.waitFor(() => {
+        expect(queuedPatchNote).toHaveBeenCalledWith('child', {
+          parentId: null,
+          order: 110,
+        });
+        expect(screen.queryByTestId('root-drop-target')).not.toBeInTheDocument();
+      });
+    });
+
     it('opens the action menu from a native right click', () => {
       seedNotes([makeNote({ id: 'a', title: 'Aye', order: 1 })]);
       render(<TreeView />);

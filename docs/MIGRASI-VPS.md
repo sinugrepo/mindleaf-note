@@ -34,7 +34,7 @@ Setelah prosedur selesai, VPS baru akan memiliki:
 - backend aktif pada `127.0.0.1:8787`;
 - frontend aktif melalui Caddy;
 - HTTPS otomatis dari Caddy;
-- backup harian pukul 03:00 UTC;
+- backup harian pukul 07:00 WIB (Asia/Jakarta);
 - service `mindleaf`, `caddy`, PostgreSQL, dan cron aktif saat reboot.
 
 Script migrasi menjalankan semua tahap tersebut secara lokal di VPS target. Script
@@ -173,7 +173,7 @@ Jalankan perintah ini setelah `mindleaf` lama dihentikan sesuai urutan cutover d
 atas:
 
 ```bash
-sudo -u mindleaf /opt/mindleaf/scripts/backup.sh
+sudo -u mindleaf /opt/mindleaf/deploy/scripts/backup.sh
 ```
 
 Output normal berisi tahap seperti:
@@ -452,7 +452,7 @@ sudo -u mindleaf \
   RCLONE_CONFIG=/opt/mindleaf/.config/rclone/rclone.conf \
   rclone lsf --files-only r2:mindleaf-prod-backups/db/
 
-sudo -u mindleaf /opt/mindleaf/scripts/backup.sh
+sudo -u mindleaf /opt/mindleaf/deploy/scripts/backup.sh
 ```
 
 Backup manual harus berhasil sebelum VPS lama dimatikan permanen.
@@ -624,7 +624,7 @@ membersihkan proses lain. Jangan menghapus `.env`, `.pgpass`, atau rclone config
 stat -c '%A %U:%G %n' /opt/mindleaf/.pgpass
 sudo chmod 600 /opt/mindleaf/.pgpass
 sudo chown mindleaf:mindleaf /opt/mindleaf/.pgpass
-sudo -u mindleaf /opt/mindleaf/scripts/backup.sh
+sudo -u mindleaf /opt/mindleaf/deploy/scripts/backup.sh
 ```
 
 Script backup menggunakan `PGPASSFILE=/opt/mindleaf/.pgpass` secara eksplisit.

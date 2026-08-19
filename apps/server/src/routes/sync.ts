@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { and, asc, eq, gt, lte, or } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { notes, attachments, tombstones } from '../db/schema.js';
-import { decrypt } from '../crypto.js';
+import { decrypt } from '../services/crypto.js';
 import { noteOwnedBy, attachmentOwnedBy, tombstoneOwnedBy } from '../lib/ownership.js';
 import { syncQuerySchema } from '../lib/request-schemas.js';
 import type {
@@ -13,7 +13,7 @@ import type {
   NoteDTO,
   AttachmentDTO,
 } from '@mindleaf/shared';
-import type { AppEnv } from '../env.js';
+import type { AppEnv } from '../config/env.js';
 
 export const syncRoutes = new Hono<AppEnv>();
 

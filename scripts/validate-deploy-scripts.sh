@@ -11,6 +11,7 @@ scripts=(
   "$REPO_ROOT/scripts/setup.sh"
   "$REPO_ROOT/scripts/migrate-vps.sh"
   "$REPO_ROOT/scripts/deploy.sh"
+  "$REPO_ROOT/scripts/restart.sh"
   "$REPO_ROOT/deploy/scripts/bootstrap.sh"
   "$REPO_ROOT/deploy/scripts/backup.sh"
 )

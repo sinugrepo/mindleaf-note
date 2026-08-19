@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { useStore } from '../store/useStore';
 
 describe('useStore', () => {
@@ -12,8 +12,6 @@ describe('useStore', () => {
       sortMode: 'manual',
       sortDirection: 'asc',
       tagFilter: [],
-      savedViews: [],
-      activeSavedViewId: null,
       selectedNoteIds: [],
     });
   });
@@ -88,82 +86,6 @@ describe('useStore', () => {
     it('uses storage key "treenote-storage"', () => {
       useStore.getState().setTheme('light');
       expect(localStorage.getItem('treenote-storage')).not.toBeNull();
-    });
-  });
-
-  describe('saved views', () => {
-    it('saves, applies, and deletes the selected view by id', () => {
-      useStore.getState().setSearchQuery('alpha');
-      useStore.getState().setTagFilter(['work']);
-      useStore.getState().setSortMode('title');
-      useStore.getState().setSortDirection('desc');
-      useStore.getState().addSavedView('Alpha view');
-
-      const saved = useStore.getState().savedViews[0];
-      expect(saved).toMatchObject({
-        name: 'Alpha view',
-        searchQuery: 'alpha',
-        tagFilter: ['work'],
-        sortMode: 'title',
-        sortDirection: 'desc',
-      });
-
-      useStore.getState().setSearchQuery('other');
-      useStore.getState().setSortDirection('asc');
-      useStore.getState().applySavedView(saved.id);
-      expect(useStore.getState().searchQuery).toBe('alpha');
-      expect(useStore.getState().sortDirection).toBe('desc');
-      expect(useStore.getState().activeSavedViewId).toBe(saved.id);
-
-      useStore.getState().deleteSavedView(saved.id);
-      expect(useStore.getState().savedViews).toEqual([]);
-      expect(useStore.getState().activeSavedViewId).toBeNull();
-    });
-
-    it('clears the active view when its filter or sort is changed', () => {
-      useStore.getState().addSavedView('Current');
-      expect(useStore.getState().activeSavedViewId).not.toBeNull();
-      useStore.getState().setSortDirection('desc');
-      expect(useStore.getState().activeSavedViewId).toBeNull();
-    });
-
-    it('falls back to ascending for legacy views without sortDirection', () => {
-      useStore.setState({
-        savedViews: [{
-          id: 'legacy', name: 'Legacy', searchQuery: '', tagFilter: [], sortMode: 'title',
-        } as never],
-        sortDirection: 'desc',
-      });
-      useStore.getState().applySavedView('legacy');
-      expect(useStore.getState().sortMode).toBe('title');
-      expect(useStore.getState().sortDirection).toBe('asc');
-    });
-
-    it('rehydrates a valid active saved view and drops a stale id', async () => {
-      localStorage.setItem('treenote-storage', JSON.stringify({
-        version: 5,
-        state: {
-          theme: 'system',
-          activeNoteId: null,
-          sortMode: 'manual',
-          sortDirection: 'asc',
-          tagFilter: [],
-          savedViews: [{
-            id: 'persisted', name: 'Persisted', searchQuery: '', tagFilter: [],
-            sortMode: 'title', sortDirection: 'desc',
-          }],
-          activeSavedViewId: 'persisted',
-        },
-      }));
-      await useStore.persist.rehydrate();
-      expect(useStore.getState().activeSavedViewId).toBe('persisted');
-
-      localStorage.setItem('treenote-storage', JSON.stringify({
-        version: 4,
-        state: { savedViews: [], activeSavedViewId: 'missing' },
-      }));
-      await useStore.persist.rehydrate();
-      expect(useStore.getState().activeSavedViewId).toBeNull();
     });
   });
 

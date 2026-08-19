@@ -123,7 +123,7 @@ immediate vulnerabilities.
 
 ### P2 — scale and supply-chain readiness
 
-- [ ] Add Playwright browser smoke tests for login, search typing (`a → ab → abc`), saved views, sorting, mobile sidebar, editing, upload, offline queue, and refresh recovery.
+- [ ] Add Playwright browser smoke tests for login, search typing (`a → ab → abc`), sorting, mobile sidebar, editing, upload, offline queue, and refresh recovery.
 - [ ] Enforce CI checks with `npm ci`, lockfile integrity, high/critical vulnerability scanning, frontend/backend tests, typechecks, builds, shell syntax checks, and server integration tests.
 - [ ] Generate an SBOM and establish dependency update/CVE monitoring.
 - [ ] Add scale fixtures and benchmarks for 1,000, 10,000, and 50,000 notes, including search, backlinks, tree rendering, and IndexedDB memory behavior.

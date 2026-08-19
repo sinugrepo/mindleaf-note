@@ -70,6 +70,18 @@ the script deploys the checkout exactly as it is. To preview the deployment firs
 sudo bash scripts/setup.sh --dry-run
 ```
 
+For a simple manual restart/deploy after application changes, use the logged
+wrapper below. It runs `scripts/deploy.sh --no-migrate`, prints the output to the
+terminal, and writes a timestamped log under `/var/log/mindleaf/`:
+
+```bash
+cd /home/sinug/mindleaf-note
+sudo bash scripts/restart.sh
+```
+
+If the release includes a database schema change, run `scripts/deploy.sh`
+directly without `--no-migrate` instead.
+
 ### Move an existing installation to a new VPS
 
 Migration is different from a fresh install because encrypted notes require the
@@ -181,7 +193,6 @@ Open <http://localhost:3000>. Vite proxies `/api` to the backend on port `8787`.
 - Rich-text editor with headings, lists, tasks, code, links, images, and wiki-links.
 - Tags, multi-tag filtering, fuzzy search, and backlinks.
 - Sorting by manual order, updated time, created time, or title, ascending/descending.
-- Saved Views for restoring search, tag filters, and sort preferences.
 - Light, dark, and system themes.
 - `.treenote` backup/restore with cloud-export fallback to local cache.
 - Offline-first sync with queued mutations, pagination, conflicts, tombstones,
@@ -204,7 +215,7 @@ The repository is organized as:
 
 ```text
 apps/web/          React SPA, IndexedDB cache, sync client, tests
-apps/server/       Hono API, auth, notes, sync, backups, R2 integration
+apps/server/       Hono API, grouped by config, routes, middleware, services, db, and tests
 packages/shared/   Shared DTOs and sync/backup contracts
 deploy/             Caddy, systemd, cron, bootstrap, backup assets
 scripts/            One-command setup, deployment, and migration entrypoints

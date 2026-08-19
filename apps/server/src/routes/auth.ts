@@ -11,7 +11,7 @@ import {
 } from '../middleware/auth.js';
 import { getCookie } from 'hono/cookie';
 import { rateLimit } from '../middleware/ratelimit.js';
-import type { AppEnv } from '../env.js';
+import type { AppEnv } from '../config/env.js';
 
 export const authRoutes = new Hono<AppEnv>();
 

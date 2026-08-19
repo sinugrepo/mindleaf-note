@@ -17,7 +17,10 @@ const tombstoneCleanupTimer = setInterval(() => {
 }, 24 * 60 * 60 * 1000);
 tombstoneCleanupTimer.unref?.();
 void purgeExpiredTombstones().catch((error) => {
-  console.warn(`[sync] initial tombstone cleanup failed (retention=${TOMBSTONE_RETENTION_DAYS}d):`, error);
+  console.warn(
+    `[sync] initial tombstone cleanup failed (retention=${TOMBSTONE_RETENTION_DAYS}d):`,
+    error,
+  );
 });
 
 const port = parseInt(process.env.PORT ?? '8787', 10);

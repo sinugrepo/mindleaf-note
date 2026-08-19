@@ -21,7 +21,6 @@ import { TrashView } from './TrashView';
 import { TagFilterBar } from './TagFilterBar';
 import { SortDropdown } from './SortDropdown';
 import { BulkActions } from './BulkActions';
-import { SavedViews } from './SavedViews';
 import { SyncStatus } from './SyncStatus';
 import { db } from '../db/db';
 import { Theme } from '../types';
@@ -277,8 +276,6 @@ export function Sidebar({ className, onClose, onLogout }: SidebarProps) {
       <div className="px-3 py-1 shrink-0 flex items-center justify-end border-b border-white/40 dark:border-white/5 sm:border-b-0">
         <SortDropdown visible={!searchQuery && !showTrash} />
       </div>
-      {!searchQuery && !showTrash && <SavedViews />}
-
       {!searchQuery && !showTrash && <BulkActions />}
 
       {/* Main List Area */}
