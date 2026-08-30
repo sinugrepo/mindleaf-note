@@ -73,6 +73,22 @@
   .prose pre {
     max-width: 100%;
     overflow-x: auto;
+    white-space: pre;
+    tab-size: 2;
+    -moz-tab-size: 2;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    line-height: 1.55;
+    padding: 1rem;
+    border-radius: 0.5rem;
+    background: rgb(24 24 27 / 0.96);
+    color: rgb(244 244 245);
+  }
+
+  .prose pre code {
+    white-space: inherit;
+    font-size: 0.875rem;
+    background: transparent;
+    padding: 0;
   }
 
   .prose img {

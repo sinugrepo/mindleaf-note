@@ -27,6 +27,7 @@ import { BacklinksPanel } from './BacklinksPanel';
 import { TagEditor } from './TagEditor';
 import { AttachmentPanel } from './AttachmentPanel';
 import { sanitizeHtml } from '../lib/sanitize';
+import { codeLanguageClass, detectCodeLanguage, normalizePastedCode } from '../lib/code-format';
 
 // ---------------------------------------------------------------------------
 // CROSS-FILE INVARIANT (do not remove without re-reading this comment):
@@ -214,6 +215,24 @@ export function Editor({ noteId }: { noteId: string }) {
       handlePaste: (view: EditorView, event: ClipboardEvent) => {
         const items = event.clipboardData?.items;
         if (!items) return false;
+
+        const plainText = event.clipboardData?.getData('text/plain');
+        if (plainText && (plainText.includes('\n') || detectCodeLanguage(plainText) !== 'unknown')) {
+          const code = normalizePastedCode(plainText);
+          if (!code) return true;
+          const language = detectCodeLanguage(code);
+          event.preventDefault();
+          const { state } = view;
+          const codeBlock = state.schema.nodes.codeBlock;
+          if (codeBlock) {
+            const node = codeBlock.create(
+              { language: codeLanguageClass(language) },
+              state.schema.text(code),
+            );
+            view.dispatch(state.tr.replaceSelectionWith(node).scrollIntoView());
+            return true;
+          }
+        }
 
         let hasImage = false;
         for (const item of Array.from(items) as DataTransferItem[]) {

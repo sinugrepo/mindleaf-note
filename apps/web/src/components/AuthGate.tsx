@@ -127,26 +127,28 @@ export function AuthGate({ children }: AuthGateProps) {
   }
 
   return (
-    <div className="min-h-screen grid place-items-center p-6 bg-sky-50 dark:bg-[#030303] bg-[radial-gradient(circle_at_15%_10%,#bae6fd_0%,transparent_40%),radial-gradient(circle_at_85%_15%,#bfdbfe_0%,transparent_45%)]">
-      <div className="w-full max-w-md rounded-2xl border border-white/70 dark:border-white/10 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-xl shadow-2xl p-8">
+    <div data-theme="dark" className="relative min-h-screen overflow-hidden grid place-items-center p-6 !bg-[#05070d] bg-[radial-gradient(circle_at_15%_10%,#172554_0%,transparent_38%),radial-gradient(circle_at_85%_15%,#312e81_0%,transparent_42%),radial-gradient(circle_at_50%_100%,#0f172a_0%,transparent_55%)]">
+      <div className="pointer-events-none absolute -left-24 -top-24 h-72 w-72 rounded-full bg-blue-400/20 blur-3xl dark:bg-blue-500/10" />
+      <div className="pointer-events-none absolute -right-24 bottom-0 h-80 w-80 rounded-full bg-violet-400/20 blur-3xl dark:bg-violet-500/10" />
+      <div className="relative w-full max-w-md rounded-2xl border border-blue-200/10 bg-slate-950/90 backdrop-blur-xl shadow-2xl shadow-black/50 p-8">
         <div className="flex items-center gap-3">
-          <div className="grid place-items-center w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500/20 to-violet-500/20 border border-white/70 dark:border-white/10">
-            <LogIn className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+          <div className="grid place-items-center w-12 h-12 rounded-xl bg-slate-900 border border-blue-200/10 shadow-lg shadow-blue-950/40 overflow-hidden">
+            <img src="/logo.png" alt="Mindleaf" className="h-10 w-10 object-contain" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <Cloud className="w-4 h-4 text-blue-500" />
-              <span className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-600 dark:text-blue-400">Mindleaf Cloud</span>
+              <Cloud className="w-4 h-4 text-emerald-400" />
+              <span className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-400">Mindleaf Cloud</span>
             </div>
-            <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">Masuk untuk sinkronisasi</h1>
+            <h1 className="text-xl font-semibold text-white">Masuk untuk sinkronisasi</h1>
           </div>
         </div>
-        <p className="mt-5 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
+        <p className="mt-5 text-sm leading-6 text-slate-300">
           Note tetap tersedia lokal, lalu akan disinkronkan ke PostgreSQL dan gambar ke Cloudflare R2 setelah masuk.
         </p>
 
         <form onSubmit={submit} className="mt-6 space-y-4">
-          <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300" htmlFor="auth-password">Password</label>
+          <label className="block text-sm font-medium text-slate-200" htmlFor="auth-password">Password</label>
           <input
             id="auth-password"
             type="password"
@@ -154,7 +156,7 @@ export function AuthGate({ children }: AuthGateProps) {
             value={password}
             onChange={(event) => { setPassword(event.target.value); setError(null); }}
             placeholder="Masukkan password"
-            className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/70 px-3 py-2.5 text-sm text-zinc-900 dark:text-zinc-100 outline-none focus:ring-2 focus:ring-blue-500/40"
+            className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/40"
             disabled={busy}
           />
           {error && <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 px-3 py-2 text-xs text-red-700 dark:text-red-300">{error}</p>}
@@ -164,7 +166,7 @@ export function AuthGate({ children }: AuthGateProps) {
           </button>
         </form>
 
-        <p className="mt-5 text-center text-[11px] text-zinc-500">Akun pertama dibuat oleh administrator melalui CLI. Session aman menggunakan HttpOnly cookie.</p>
+        <p className="mt-5 text-center text-[11px] leading-5 text-slate-400">Akun pertama dibuat oleh administrator melalui CLI. Session aman menggunakan HttpOnly cookie.</p>
       </div>
     </div>
   );

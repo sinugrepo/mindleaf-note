@@ -1,5 +1,7 @@
 import type { Editor as TiptapEditor } from '@tiptap/react';
+import type React from 'react';
 import { cn } from '../lib/utils';
+import { Code2 } from 'lucide-react';
 
 /**
  * Lightweight formatting toolbar rendered above the TipTap editor surface.
@@ -57,7 +59,8 @@ export function EditorToolbar({ editor }: { editor: TiptapEditor | null }) {
       <FormatButton
         active={editor.isActive('codeBlock')}
         onClick={() => editor.chain().focus().toggleCodeBlock().run()}
-        label="< />"
+        label="Code"
+        icon={<Code2 className="mr-1 inline-block h-3.5 w-3.5" />}
       />        <div className="hidden h-4 w-px bg-zinc-200 dark:bg-zinc-700 mx-1 sm:block"></div>
       <button
         type="button"
@@ -86,11 +89,13 @@ function FormatButton({
   onClick,
   label,
   className,
+  icon,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
   className?: string;
+  icon?: React.ReactNode;
 }) {
   return (
     <button
@@ -102,6 +107,7 @@ function FormatButton({
         className,
       )}
     >
+      {icon}
       {label}
     </button>
   );
