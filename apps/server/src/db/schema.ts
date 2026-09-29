@@ -8,6 +8,7 @@ import {
   timestamp,
   index,
   customType,
+  unique,
   uniqueIndex,
   foreignKey,
   type AnyPgColumn,
@@ -125,7 +126,7 @@ export const notes = pgTable(
   },
   (table) => ({
     parentIdx: index('notes_parent_idx').on(table.parentId),
-    ownerIdIdx: uniqueIndex('notes_owner_id_idx').on(table.userId, table.id),
+    ownerIdIdx: unique('notes_owner_id_idx').on(table.id, table.userId),
     updatedAtIdx: index('notes_updated_at_idx').on(table.updatedAt),
     deletedParentIdx: index('notes_deleted_parent_idx').on(
       table.isDeleted,

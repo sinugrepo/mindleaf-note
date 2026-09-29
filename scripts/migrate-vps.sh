@@ -157,6 +157,17 @@ set -a
 source "$INSTALL_ROOT/.env"
 set +a
 
+# Secret bundles exported by an older template only embed the account ID
+# inside R2_ENDPOINT. Derive it here instead of rejecting a valid bundle;
+# the value is exported for bootstrap.sh and never written back to the file,
+# so a retry with the same --env-file still compares byte-identical.
+if [[ -z "${R2_ACCOUNT_ID:-}" && -n "${R2_ENDPOINT:-}" ]]; then
+    R2_ACCOUNT_ID="${R2_ENDPOINT#*://}"
+    R2_ACCOUNT_ID="${R2_ACCOUNT_ID%%.*}"
+    export R2_ACCOUNT_ID
+    log "derived R2_ACCOUNT_ID from R2_ENDPOINT"
+fi
+
 for required in DATABASE_URL MASTER_ENCRYPTION_KEY SESSION_SECRET R2_ACCOUNT_ID R2_ACCESS_KEY R2_SECRET_KEY ALLOWED_ORIGIN; do
     if [[ -z "${!required:-}" ]]; then
         err "$required is missing from $INSTALL_ROOT/.env"
@@ -243,10 +254,20 @@ if [[ $NO_RESTORE -eq 0 ]]; then
     install -o mindleaf -g mindleaf -m 0600 "$TMP_DIR/mindleaf.restore.dump" "$INSTALL_ROOT/.mindleaf.restore.dump"
 
     systemctl stop mindleaf || true
+    # bootstrap.sh has already pushed a fresh Drizzle schema, where
+    # notes_owner_id_idx is a unique constraint. The archive stores the same name
+    # as a plain index, so pg_restore --clean cannot DROP it. Rebuild the schema
+    # from scratch first: the dump is the source of truth for this database.
+    sudo -u mindleaf env \
+        PGHOST=localhost PGPORT=5432 PGUSER=mindleaf PGDATABASE=mindleaf \
+        PGPASSFILE="$INSTALL_ROOT/.pgpass" \
+        psql -v ON_ERROR_STOP=1 \
+        -c 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT USAGE ON SCHEMA public TO PUBLIC;'
     sudo -u mindleaf env \
         PGHOST=localhost PGPORT=5432 PGUSER=mindleaf PGDATABASE=mindleaf \
         PGPASSFILE="$INSTALL_ROOT/.pgpass" \
         pg_restore --clean --if-exists --no-owner --no-acl --exit-on-error \
+        -d mindleaf \
         "$INSTALL_ROOT/.mindleaf.restore.dump"
     rm -f "$INSTALL_ROOT/.mindleaf.restore.dump"
     log "database restore complete"
@@ -272,8 +293,14 @@ if [[ $SKIP_PUBLIC_CHECK -eq 0 ]]; then
     if curl --fail --silent --show-error --max-time 20 "$PUBLIC_URL/healthz" >/dev/null; then
         log "public HTTPS healthcheck passed: $PUBLIC_URL/healthz"
     else
-        warn "public HTTPS check failed; verify DNS and firewall for $PUBLIC_URL"
-        warn "local service is healthy; rerun with --skip-public-check only when DNS is intentionally pending"
+        warn "public HTTPS check failed for $PUBLIC_URL/healthz (local service is healthy)"
+        warn "curl reports 522 when TCP 80/443 is blocked: check 'ufw status' on this VPS"
+        warn "and the port forwarding/security group of your provider (a NAT VPS needs"
+        warn "80/443 forwarded in the provider panel), then confirm the Cloudflare A"
+        warn "record points at this VPS IP."
+        warn "curl reports 525 when the origin has no certificate yet: watch"
+        warn "'journalctl -u caddy -f' until 'certificate obtained successfully' appears."
+        warn "rerun with --skip-public-check only when DNS or the firewall is intentionally pending"
         exit 1
     fi
 else

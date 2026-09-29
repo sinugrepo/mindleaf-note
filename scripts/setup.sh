@@ -10,7 +10,17 @@
 # This is an orchestrator. The existing bootstrap, migration, and deploy
 # scripts remain the authoritative implementation for each individual phase.
 set -Eeuo pipefail
-umask 077
+# This orchestrator produces shared artifacts, not only secrets: it clones the
+# checkout, installs workspace dependencies into it, and later runs
+# `sudo -u mindleaf npm run ...` against that tree in fresh mode. Under 077
+# those become 0700/0600 and the `mindleaf` account is refused with EACCES
+# (git and npm both apply the umask to what they create). bootstrap.sh and
+# deploy.sh pin `umask 022` themselves, so they are correct whatever the
+# caller sets. The two secrets written directly here stay protected
+# independently of this value: the seed password comes from mktemp (always
+# 0600) and the admin credential file is written under a local `umask 077`
+# and then chmod 0600.
+umask 022
 ORIGINAL_ARGS=("$@")
 
 REPO_URL="${MINDLEAF_REPO_URL:-https://github.com/sinugrepo/mindleaf-note.git}"

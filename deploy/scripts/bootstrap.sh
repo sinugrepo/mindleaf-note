@@ -27,12 +27,24 @@
 # Exit codes:
 #   0 = success
 #   1 = prerequisite missing (run as root with sudo)
-#   2 = apt install failed (network issue / package unavailable)
+#   2 = apt install failed (network issue / package unavailable), or a
+#       repository signing key/source entry could not be fetched and validated
 #   3 = postgres provisioning failed
 #   4 = rclone config not provided
 # =============================================================================
 
 set -euo pipefail
+
+# APT keyrings, service configuration, and build output served by Caddy must
+# stay readable by accounts other than root (`_apt`, `caddy`). The
+# one-command entrypoints are free to run with `umask 077` while handling
+# secrets (scripts/migrate-vps.sh does) and they invoke this script directly,
+# so that restrictive umask would be inherited. Under it, `gpg --dearmor`
+# writes 0600 keyrings and apt then fails with
+# `NO_PUBKEY ... repository is not signed`. Pin the umask here instead of
+# trusting the caller. Secret files are unaffected: every one is pre-created
+# with `install -m 0600` before it receives content.
+umask 022
 
 # The checkout that contains this script is the source for the bootstrap
 # template. It may live in /home (for example /home/sinug/mindleaf-note);
@@ -71,7 +83,16 @@ id "$DEPLOY_USER" >/dev/null 2>&1 || {
     exit 1
 }
 
-: "${R2_ACCOUNT_ID:?R2_ACCOUNT_ID is required}"
+# Older secret bundles and manual exports may carry the account ID only inside
+# R2_ENDPOINT. Derive it before the hard requirement below so a valid bundle
+# does not fail pre-flight.
+if [[ -z "${R2_ACCOUNT_ID:-}" && -n "${R2_ENDPOINT:-}" ]]; then
+    R2_ACCOUNT_ID="${R2_ENDPOINT#*://}"
+    R2_ACCOUNT_ID="${R2_ACCOUNT_ID%%.*}"
+    export R2_ACCOUNT_ID
+    echo "R2_ACCOUNT_ID derived from R2_ENDPOINT" >&2
+fi
+: "${R2_ACCOUNT_ID:?R2_ACCOUNT_ID is required (set it directly, or set R2_ENDPOINT)}"
 : "${R2_ACCESS_KEY:?R2_ACCESS_KEY is required}"
 : "${R2_SECRET_KEY:?R2_SECRET_KEY is required}"
 : "${ALLOWED_ORIGIN:?ALLOWED_ORIGIN is required}"
@@ -101,19 +122,51 @@ apt-get install -y --no-install-recommends \
 # Ubuntu 22.04 does not ship PostgreSQL 16 or Caddy in its default
 # repositories. Add the official repositories idempotently before install.
 install -d -m 0755 /etc/apt/keyrings /usr/share/keyrings
-curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-    | gpg --dearmor --yes -o /etc/apt/keyrings/postgresql.gpg
-printf 'deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
-    "$(. /etc/os-release && echo "$VERSION_CODENAME")" \
-    > /etc/apt/sources.list.d/pgdg.list
+
+PG_KEYRING="/etc/apt/keyrings/postgresql.gpg"
+CADDY_KEYRING="/usr/share/keyrings/caddy-stable-archive-keyring.gpg"
+PG_SOURCE_LIST="/etc/apt/sources.list.d/pgdg.list"
+CADDY_SOURCE_LIST="/etc/apt/sources.list.d/caddy-stable.list"
+
+# Download an APT signing key into an explicit 0644 file and prove it holds a
+# usable public key. Two failure modes are caught here instead of surfacing
+# later as the unhelpful `NO_PUBKEY ... repository is not signed`: a keyring
+# created 0600 by an inherited restrictive umask (apt runs unprivileged and
+# cannot read it), and a keyring that is empty because the download returned
+# something that is not OpenPGP data.
+install_apt_keyring() {
+    local url="$1" dest="$2"
+    curl -fsSL --retry 3 --retry-connrefused --connect-timeout 15 --max-time 120 "$url" \
+        | gpg --dearmor --yes -o "$dest"
+    [[ -s "$dest" ]] || {
+        echo "ERROR: empty APT keyring written to $dest (source: $url)" >&2
+        exit 2
+    }
+    if ! gpg --show-keys --batch "$dest" >/dev/null 2>&1; then
+        echo "ERROR: $dest does not contain a valid public key (source: $url)" >&2
+        exit 2
+    fi
+    chmod 0644 "$dest"
+    log "APT keyring installed (mode 0644): $dest"
+}
+
+install_apt_keyring 'https://www.postgresql.org/media/keys/ACCC4CF8.asc' "$PG_KEYRING"
+printf 'deb [signed-by=%s] http://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
+    "$PG_KEYRING" "$(. /etc/os-release && echo "$VERSION_CODENAME")" \
+    > "$PG_SOURCE_LIST"
 
 # Cloudsmith's published source list currently references this exact
 # /usr/share/keyrings path; keep the key and source synchronized.
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-    | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-    | sed 's#signed-by=[^]]*#signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg#g' \
-    > /etc/apt/sources.list.d/caddy-stable.list
+install_apt_keyring 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' "$CADDY_KEYRING"
+curl -fsSL --retry 3 --retry-connrefused --connect-timeout 15 --max-time 120 \
+    'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+    | sed "s#signed-by=[^]]*#signed-by=$CADDY_KEYRING#g" \
+    > "$CADDY_SOURCE_LIST"
+grep -q '^deb ' "$CADDY_SOURCE_LIST" || {
+    echo "ERROR: $CADDY_SOURCE_LIST has no usable entry (Cloudsmith source list download failed)" >&2
+    exit 2
+}
+chmod 0644 "$PG_SOURCE_LIST" "$CADDY_SOURCE_LIST"
 
 apt-get update -y
 apt-get install -y --no-install-recommends \
@@ -131,6 +184,16 @@ fi
 systemctl enable --now postgresql
 systemctl enable --now cron
 systemctl disable --now caddy 2>/dev/null || true
+
+# UFW defaults to deny inbound, and an unnoticed 80/443 block only surfaces
+# later as a failed ACME challenge (no certificate) and a public healthcheck
+# failure. Open the web ports when UFW is active; ports 80/443 must also be
+# forwarded by the provider panel on a NAT VPS, which nothing inside the
+# guest can do. PostgreSQL and the app stay on loopback and stay closed.
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
+    ufw allow 80,443/tcp >/dev/null
+    log "firewall: ufw allows tcp 80,443 (verify provider port forwarding separately)"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 2 — system user
@@ -169,6 +232,11 @@ fi
 
 if [[ ! -f "$ENV_FILE" ]]; then
     # First-time bootstrap. Generate secrets and render the template.
+    # Pre-create the file at 0600 before the `sed` redirect below: the umask
+    # is 022 for the rest of this script, and redirection truncates an existing
+    # file in place, so the rendered secrets are never readable by another
+    # account at any point, not even between creation and the chmod below.
+    install -m 0600 /dev/null "$ENV_FILE"
     SESSION_SECRET="$(openssl rand -base64 32)"
     MASTER_ENCRYPTION_KEY="$(openssl rand -base64 32)"
     PG_PASSWORD="$(openssl rand -base64 24 | tr -d '/+' | cut -c1-30)"
@@ -232,16 +300,23 @@ process.stdout.write(decodeURIComponent(url.password));
 ')"
 [[ -n "$DB_PASSWORD" ]] || { echo "ERROR: DATABASE_URL has an empty password" >&2; exit 3; }
 
+# psql only interpolates `:'db_password'` when it reads SQL from a file or
+# from stdin. A statement passed to `-c` is sent verbatim, which made this
+# step fail with `syntax error at or near ":"` on a fresh provisioning. The
+# quoted heredoc stops the shell from expanding anything, and psql renders the
+# password as a properly quoted SQL literal, so punctuation survives intact.
 if ! sudo -u postgres psql -tA -c "SELECT 1 FROM pg_roles WHERE rolname='mindleaf'" | grep -q 1; then
-    sudo -u postgres psql -v ON_ERROR_STOP=1 -v db_password="$DB_PASSWORD" \
-        -c "CREATE ROLE mindleaf LOGIN PASSWORD :'db_password'"
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -v db_password="$DB_PASSWORD" <<'SQL'
+CREATE ROLE mindleaf LOGIN PASSWORD :'db_password';
+SQL
     log "postgres role created"
 else
     # Reconcile an existing role with the supplied DATABASE_URL. This makes
     # reruns deterministic and prevents a stale role password from breaking
     # drizzle-kit, pg_dump, or pg_restore on the replacement VPS.
-    sudo -u postgres psql -v ON_ERROR_STOP=1 -v db_password="$DB_PASSWORD" \
-        -c "ALTER ROLE mindleaf LOGIN PASSWORD :'db_password'"
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -v db_password="$DB_PASSWORD" <<'SQL'
+ALTER ROLE mindleaf LOGIN PASSWORD :'db_password';
+SQL
     log "postgres role 'mindleaf' password synchronized"
 fi
 if ! sudo -u postgres psql -tA -c "SELECT 1 FROM pg_database WHERE datname='mindleaf'" | grep -q 1; then
@@ -261,6 +336,9 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 \
 # decoded password so credentials remain valid even when DATABASE_URL contains
 # URL-encoded punctuation.
 PGPASSWORD_PLACEHOLDER="$(printf '%s' "$DB_PASSWORD" | sed 's/[\\:]/\\&/g')"
+# Pre-created at 0600 so the heredoc below never lands on a world-readable
+# file; redirection keeps the mode of an existing file.
+install -m 0600 /dev/null "$INSTALL_ROOT/.pgpass"
 cat > "$INSTALL_ROOT/.pgpass" <<PGPASS
 localhost:5432:mindleaf:mindleaf:$PGPASSWORD_PLACEHOLDER
 *:5432:mindleaf:mindleaf:$PGPASSWORD_PLACEHOLDER
@@ -277,6 +355,9 @@ log "Step 6: write /opt/mindleaf/.config/rclone/rclone.conf"
 mkdir -p "$INSTALL_ROOT/.config/rclone"
 RCLONE_PATH="$INSTALL_ROOT/.config/rclone/rclone.conf"
 if [[ ! -f "$RCLONE_PATH" ]]; then
+    # Pre-created at 0600 for the same reason as .env and .pgpass: the writes
+    # below truncate in place and therefore keep this mode.
+    install -m 0600 /dev/null "$RCLONE_PATH"
     if [[ -n "${RCLONE_CONF_B64:-}" ]]; then
         echo "$RCLONE_CONF_B64" | base64 -d > "$RCLONE_PATH"
     else
@@ -341,6 +422,7 @@ install -o mindleaf -g mindleaf -m 0644 /dev/null /var/lock/mindleaf-backup.lock
 # reload services. Keep this narrowly scoped: deploy.sh never needs a shell,
 # package manager, SSH, or remote rsync privilege. The runtime service account
 # remains `mindleaf`; DEPLOY_USER is normally the invoking human (e.g. sinug).
+install -m 0440 /dev/null /etc/sudoers.d/mindleaf-deploy
 cat > /etc/sudoers.d/mindleaf-deploy <<SUDOERS
 Cmnd_Alias MINDLEAF_DEPLOY = /usr/bin/systemctl *, /bin/systemctl *, /usr/bin/caddy *, /usr/bin/install *, /bin/install *, /usr/bin/mkdir *, /bin/mkdir *, /usr/bin/rm *, /bin/rm *, /usr/bin/cp *, /bin/cp *, /usr/bin/mv *, /bin/mv *, /usr/bin/chown *, /bin/chown *, /usr/bin/find *, /usr/bin/test *, /bin/test *, /usr/bin/rclone *, /bin/rclone *, /usr/bin/awk *, /bin/awk *
 $DEPLOY_USER ALL=(root) NOPASSWD: MINDLEAF_DEPLOY

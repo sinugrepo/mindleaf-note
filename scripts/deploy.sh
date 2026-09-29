@@ -29,6 +29,17 @@
 
 set -Eeuo pipefail
 
+# This script writes artifacts that other accounts must read: the Caddyfile
+# consumed by the `caddy` service user, the systemd unit and cron entry, and
+# the frontend build output Caddy serves. scripts/migrate-vps.sh keeps
+# `umask 077` while handling secrets and starts this script directly, so the
+# restrictive umask is inherited; fresh mode starts it through sudo instead,
+# which silently resets the umask to 022. Pin the mode here so both paths
+# produce the same layout, and so a 0600 /var/www/mindleaf/dist cannot lock
+# `caddy` out of the SPA. Operational secrets are never created here: .env,
+# .pgpass, and .config/ are copied with `cp -a`, which preserves 0600.
+umask 022
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_PATH="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 DEPLOY_ROOT="${DEPLOY_ROOT:-/opt/mindleaf}"
@@ -219,6 +230,9 @@ if [[ $ROLLBACK -eq 1 ]]; then
         sed "s#__MINDLEAF_DOMAIN__#$CADDY_DOMAIN#" "$DEPLOY_ROOT/deploy/Caddyfile" | sudo tee /etc/caddy/Caddyfile >/dev/null
         sed "s#/opt/mindleaf#$DEPLOY_ROOT#g" "$DEPLOY_ROOT/deploy/systemd/mindleaf.service" | sudo tee /etc/systemd/system/mindleaf.service >/dev/null
         sed "s#/opt/mindleaf#$DEPLOY_ROOT#g" "$DEPLOY_ROOT/deploy/cron.d/mindleaf-backup" | sudo tee /etc/cron.d/mindleaf-backup >/dev/null
+        # `tee` creates 0666 & ~umask; force the documented mode so the
+        # `caddy` service user can read its configuration.
+        sudo chmod 0644 /etc/caddy/Caddyfile /etc/systemd/system/mindleaf.service /etc/cron.d/mindleaf-backup
         sudo caddy validate --config /etc/caddy/Caddyfile
         sudo systemctl daemon-reload
         sudo systemctl reload caddy
@@ -355,13 +369,18 @@ else
     [[ "$CADDY_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || { err "ALLOWED_ORIGIN must contain a valid hostname for Caddy"; exit 66; }
     sed "s#__MINDLEAF_DOMAIN__#$CADDY_DOMAIN#" "$DEPLOY_ROOT/deploy/Caddyfile" | sudo tee /etc/caddy/Caddyfile >/dev/null
     CADDY_CONFIG_INSTALLED=1
+    # `tee` creates 0666 & ~umask; caddy.service runs as `User=caddy`, so a
+    # world-readable Caddyfile is a hard requirement, not a preference.
+    sudo chmod 0644 /etc/caddy/Caddyfile
     sudo caddy validate --config /etc/caddy/Caddyfile
     sudo systemctl reload caddy || sudo systemctl start caddy
 
     sed "s#/opt/mindleaf#$DEPLOY_ROOT#g" "$DEPLOY_ROOT/deploy/systemd/mindleaf.service" | sudo tee /etc/systemd/system/mindleaf.service >/dev/null
     SYSTEMD_CONFIG_INSTALLED=1
+    sudo chmod 0644 /etc/systemd/system/mindleaf.service
     sed "s#/opt/mindleaf#$DEPLOY_ROOT#g" "$DEPLOY_ROOT/deploy/cron.d/mindleaf-backup" | sudo tee /etc/cron.d/mindleaf-backup >/dev/null
     CRON_CONFIG_INSTALLED=1
+    sudo chmod 0644 /etc/cron.d/mindleaf-backup
     sudo systemctl daemon-reload
     sudo systemctl enable mindleaf caddy
 fi

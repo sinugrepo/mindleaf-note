@@ -92,9 +92,31 @@ export async function prepareOwnershipMigration(
     }
 
     if (existingTables.has('notes') && existingTables.has('attachments')) {
-      await sql.unsafe(
-        'CREATE UNIQUE INDEX IF NOT EXISTS "notes_owner_id_idx" ON "notes" (user_id, id)',
-      );
+      const ownerUnique = await sql<{ conname: string }[]>`
+        SELECT conname
+        FROM pg_constraint
+        WHERE conrelid = 'notes'::regclass
+          AND conname = 'notes_owner_id_idx'
+          AND contype = 'u'
+      `;
+      if (ownerUnique.length === 0) {
+        const ownerIndex = await sql<{ indexname: string }[]>`
+          SELECT indexname
+          FROM pg_indexes
+          WHERE schemaname = 'public'
+            AND tablename = 'notes'
+            AND indexname = 'notes_owner_id_idx'
+        `;
+        if (ownerIndex.length > 0) {
+          await sql.unsafe(
+            'ALTER TABLE "attachments" DROP CONSTRAINT IF EXISTS "attachments_user_note_fk"',
+          );
+          await sql.unsafe('DROP INDEX IF EXISTS "notes_owner_id_idx"');
+        }
+        await sql.unsafe(
+          'ALTER TABLE "notes" ADD CONSTRAINT "notes_owner_id_idx" UNIQUE (id, user_id)',
+        );
+      }
       await sql.unsafe(
         `DO $$ BEGIN
            IF NOT EXISTS (
