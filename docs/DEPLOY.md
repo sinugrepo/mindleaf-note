@@ -37,10 +37,10 @@ Sebelum menjalankan apapun, sediakan dahulu:
 |---|---|---|
 | 1 | **VPS** dengan Ubuntu 24.04 LTS, ≥ 1 vCPU / ≥ 1 GB RAM | Hetzner / DigitalOcean / Vultr, dll |
 | 2 | **Domain** yang dibeli (Cloudflare Registrar / Namecheap / dll) | Target FQDN: `notes.sinug.my.id` |
-| 3 | **DNS A-record** untuk domain → IP publik VPS | **Cloudflare orange-cloud proxy HARUS OFF** untuk first-time cert issue + renewal. Caddy pakai ACME HTTP-01 challenge — Cloudflare HTTP proxy bisa intermittent-fail forward challenge ke origin (mysterious cert-renewal errors di journal). Kalau tetap mau orange-cloud ON: pakai **DNS-only record untuk `_acme-challenge.mindleaf.example.com`** (allow Caddy resolve path langsung) **ATAU** pakai Cloudflare Full SSL mode + tunggu propagasi DNS untuk renewal. |
+| 3 | **DNS A-record** untuk domain → IP publik VPS | **Cloudflare orange-cloud proxy HARUS OFF** untuk first-time cert issue + renewal. Caddy pakai ACME HTTP-01 challenge — Cloudflare HTTP proxy bisa intermittent-fail forward challenge ke origin (mysterious cert-renewal errors di journal). Kalau tetap mau orange-cloud ON: pakai **DNS-only record untuk `_acme-challenge.mindleaf.example.com`** (allow Caddy resolve path langsung) **ATAU** pakai Cloudflare Full SSL mode + tunggu propagasi DNS untuk renewal. Sebelum menyimpulkan proxy Cloudflare bermasalah, cek dulu apakah port 80/443 terjangkau dari internet (§6.10): begitu origin terbuka, challenge ACME memang bisa tembus lewat proxy — `Invalid response ...: 522` di journal berarti origin-nya yang tertutup, bukan proxynya. |
 | 4 | **Cloudflare R2 bucket** (pisah: `mindleaf-prod` untuk attachments, `mindleaf-prod-backups` untuk db dumps) | Account ID + Access Key + Secret Key siap |
 | 5 | **SSH key pair** untuk akses `mindleaf@<vps>` tanpa password | Opsional tapi recommended |
-| 6 | **VPS baru** untuk migrasi: cukup Ubuntu 24.04, akses root/sudo, internet keluar, dan port 80/443 terbuka; `migrate-vps.sh` memasang repo, Node 22, npm, Caddy, PostgreSQL, dan rclone. Untuk deploy harian, edit checkout repo mana pun di VPS lalu jalankan `scripts/deploy.sh`; script menyalin release ke `/opt/mindleaf`. | Semua script berjalan lokal di VPS; tidak memakai SSH/remote deploy. |
+| 6 | **VPS baru** untuk migrasi: cukup Ubuntu 24.04, akses root/sudo, internet keluar, dan port 80/443 terbuka dari internet (`ufw allow 80,443/tcp`, plus forward port di panel provider bila VPS di belakang NAT); `migrate-vps.sh` memasang repo, Node 22, npm, Caddy, PostgreSQL, dan rclone. Untuk deploy harian, edit checkout repo mana pun di VPS lalu jalankan `scripts/deploy.sh`; script menyalin release ke `/opt/mindleaf`. | Semua script berjalan lokal di VPS; tidak memakai SSH/remote deploy. |
 
 > 🚨 **Untuk first-time**: butuh akses root ke VPS selama ~5 menit via SSH. Setelah
 > `bootstrap.sh` selesai, login sebagai `root` tidak lagi diperlukan (cukup
@@ -677,6 +677,26 @@ salah, recovery:
 Untuk experimental columns, simulasikan di local docker compose dulu sebelum
 `db:push` ke production.
 
+Output `db:push` berikut ini sering terlihat dan **bukan** error:
+
+- `DROP CONSTRAINT` + `ADD CONSTRAINT ... FOREIGN KEY ("user_id","note_id")`
+  pada `attachments_user_note_fk` — introspeksi drizzle-kit mengembalikan
+  urutan kolom yang selalu dianggap berbeda, jadi FK komposit di-drop/di-add
+  ulang tiap push. Idempoten dan aman.
+- `ALTER TABLE "notes" ALTER COLUMN "tags" SET DEFAULT '{}'` — default array
+  yang selalu dinormalisasi ulang; harmless.
+- `DROP INDEX "notes_user_id_idx"` — churn antara `ownership:prepare` dan
+  drizzle-kit; index dibuat lagi pada `ownership:prepare` run berikutnya.
+
+Yang benar-benar error adalah `PostgresError` / `error:` di tengah output.
+Penting: `drizzle-kit push` bisa **exit 0 walau `PostgresError` muncul**, jadi
+grep log migrasi/deploy untuk `PostgresError` — jangan hanya mempercayai exit
+code:
+
+```bash
+grep -c 'PostgresError' /var/log/mindleaf-migrate-*.log
+```
+
 ### 6.9 OOM kills
 
 Systemd unit sudah cap `MemoryMax=768M` + `OOMPolicy=stop` (kill sebelum jadi
@@ -695,6 +715,50 @@ Kalau sering OOM, biasanya karena:
 - Postgres RAM-bound state (caching tables besar) → cek `MemoryHigh=` mungkin di-bump.
 - Backup concurrent `pg_dump` aktif saat backend lagi encode banyak images → spread
   ke window cron setelah 07:00 WIB jika traffic peaks di morning.
+
+### 6.10 Healthcheck publik gagal (`522` / `525`)
+
+Gejala: `localhost:8787/healthz` dan `caddy validate` sukses, tetapi
+`https://<domain>/healthz` mengembalikan `522`/`525` sehingga migrasi/setup
+exit 1 di "Final migration checks".
+
+| Kode | Arti | Penyebab paling umum |
+|---|---|---|
+| `522` | Cloudflare tidak dapat membuka koneksi ke origin | port 80/443 ditolak `ufw`, belum di-forward panel provider (VPS NAT), atau IP pada A record salah |
+| `525` | Koneksi terbuka tetapi TLS handshake gagal | sertifikat ACME belum terbit (biasanya baru beberapa detik setelah challenge sukses) |
+| `526` | Sertifikat origin tidak valid | mode SSL Cloudflare `Full (strict)` dengan sertifikat yang belum valid/kedaluwarsa |
+
+Diagnosis dari VPS:
+
+```bash
+ufw status | grep -E '80|443'      # harus ALLOW (bootstrap sudah menambahkannya)
+ss -lntp | grep -E ':80|:443'      # caddy harus listen di *:80 dan *:443
+journalctl -u caddy -f             # tunggu "certificate obtained successfully"
+curl -s https://<domain>/healthz    # harus {"ok":true}
+```
+
+Dari luar VPS (mis. dari mesin lain) cek apakah port benar-benar terjangkau:
+
+```bash
+curl -sI http://<IP-VPS>/           # harus 308 redirect ke HTTPS
+```
+
+Kalau dari luar timeout padahal semua langkah di VPS benar, port belum
+di-forward provider → aktifkan di panel client (port forwarding / firewall /
+security group). Itu bagian yang tidak bisa dikerjakan dari dalam mesin.
+
+### 6.11 Sertifikat ACME gagal saat challenge
+
+`journalctl -u caddy | grep -i acme` biasanya menampilkan salah satu dari:
+
+- `Invalid response from http://<domain>/.well-known/acme-challenge/...: 522`
+  → origin port 80 tidak terjangkau; lihat §6.10.
+- `Cannot negotiate ALPN protocol "acme-tls/1"` → normal saat Caddy masih
+  mencoba tls-alpn-01; Caddy otomatis fallback ke http-01.
+- `DNS problem: NXDOMAIN` → A record belum ada/propagasi; cek `dig <domain>`.
+
+Caddy mencoba ulang otomatis (interval awal 2 menit, lalu backoff), jadi
+perbaiki penyebabnya lalu tunggu — tidak perlu restart service.
 
 ---
 

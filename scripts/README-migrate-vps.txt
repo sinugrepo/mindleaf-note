@@ -12,6 +12,9 @@ The env file must be copied from the old VPS/password manager and must retain:
 - R2_ACCOUNT_ID, R2_ACCESS_KEY, R2_SECRET_KEY
 - ALLOWED_ORIGIN
 
+R2_ACCOUNT_ID may be missing only when R2_ENDPOINT is present; the script
+derives the account ID from the endpoint before validating the bundle.
+
 The command clones main from GitHub, installs PostgreSQL/Caddy/rclone/Node,
 creates the mindleaf service account and cron prerequisites, configures PostgreSQL
 and R2, restores the latest database dump from r2:mindleaf-prod-backups/db,
@@ -26,6 +29,12 @@ Options:
   --no-restore                      Provision an empty database (new installation).
   --timeout 1200                    Kill a stuck bootstrap/deploy phase (with
                                      a 30-second child-process kill grace).
+
+Ports 80 and 443 must be reachable from the internet before the final public
+healthcheck: allow them in ufw (bootstrap adds the rule when UFW is active) and
+forward them in the provider panel on a NAT VPS. A blocked port fails with 522,
+a missing certificate with 525. Use --skip-public-check only while DNS or the
+firewall is intentionally still pending.
 
 The script does not modify application source files. It only installs the source
 and infrastructure artifacts on the target VPS. Never commit the env file.

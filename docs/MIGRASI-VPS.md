@@ -52,8 +52,15 @@ Gunakan VPS baru dengan:
 - minimal 1 vCPU dan 1 GB RAM;
 - akses root atau user dengan `sudo`;
 - koneksi internet keluar untuk apt, GitHub, npm, dan Cloudflare R2;
-- port TCP `80` dan `443` terbuka dari internet;
-- port PostgreSQL `5432` **tidak** perlu dibuka ke internet.
+- port TCP `80` dan `443` terbuka dari internet: izinkan lewat `ufw`
+  (bootstrap menambah aturan ini bila UFW aktif) **dan** lewat panel provider.
+  Pada VPS di belakang NAT, port 80/443 harus diaktifkan di panel provider —
+  tidak bisa dibuka dari dalam mesin. Selama port tertutup, ACME tidak bisa
+  menerbitkan sertifikat dan healthcheck publik gagal dengan `522`
+  (Cloudflare tidak bisa mencapai origin) atau `525` (origin belum punya
+  sertifikat);
+- port PostgreSQL `5432` **tidak** perlu dibuka ke internet; cukup tetap di
+  `127.0.0.1`.
 
 Untuk HTTPS, DNS domain harus dapat diarahkan ke IP VPS baru.
 
@@ -601,6 +608,29 @@ Periksa:
 - Cloudflare tidak menghalangi challenge ACME;
 - `ALLOWED_ORIGIN` memakai domain dan scheme yang tepat.
 
+Kode galat pada healthcheck publik menunjuk penyebab yang berbeda:
+
+| Galat | Arti | Tindakan |
+|---|---|---|
+| `522` | Cloudflare tidak dapat membuka koneksi ke origin | buka 80/443: cek `ufw status`, lalu aktifkan forward port di panel provider (wajib untuk VPS NAT); pastikan IP pada A record = IP publik VPS baru |
+| `525` | Koneksi terbuka tetapi handshake TLS gagal, biasanya karena sertifikat belum terbit | tunggu ACME selesai dengan `journalctl -u caddy -f` sampai muncul `certificate obtained successfully`, lalu jalankan ulang migrasi |
+| `526` | Sertifikat origin tidak valid atau kedaluwarsa | cek galat renewal di `journalctl -u caddy` dan mode SSL Cloudflare (`Full` / `Full (strict)`) |
+
+Diagnosis cepat dari VPS:
+
+```bash
+ufw status | grep -E '80|443'     # harus ALLOW
+ss -lntp | grep -E ':80|:443'     # caddy harus listen
+sudo ls /var/lib/caddy/.local/share/certificates 2>/dev/null || \
+  sudo ls /var/lib/caddy/.local/share/caddy/certificates/*/*/
+curl -s https://notes.sinug.my.id/healthz   # harus {"ok":true}
+```
+
+Jika semua langkah di VPS benar tetapi port 80/443 masih timeout dari luar,
+berarti port tersebut belum di-forward provider: aktifkan di panel client
+(port forwarding / firewall / security group). Kondisi ini tidak bisa
+diperbaiki dari dalam mesin.
+
 ### 8.6 Backend gagal start
 
 ```bash
@@ -733,12 +763,14 @@ sudo bash scripts/migrate-vps.sh \
 ### Sebelum migrasi
 
 - [ ] VPS baru Ubuntu 24.04 siap.
-- [ ] Port 80 dan 443 terbuka.
+- [ ] Port 80 dan 443 terbuka (aturan `ufw` + forward port di panel provider).
 - [ ] R2 bucket attachment tetap tersedia.
 - [ ] R2 bucket backup dapat dibaca.
 - [ ] Backup database terakhir berhasil.
 - [ ] File `.env` production lama tersedia.
 - [ ] `MASTER_ENCRYPTION_KEY` lama sudah diverifikasi.
+- [ ] `R2_ACCOUNT_ID` ada di file env, atau `R2_ENDPOINT` tersedia agar bisa
+      diturunkan otomatis oleh script.
 - [ ] DNS dan IP VPS baru sudah diketahui.
 
 ### Saat migrasi

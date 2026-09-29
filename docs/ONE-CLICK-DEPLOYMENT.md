@@ -39,8 +39,12 @@ The script can install the VPS software, but the operator must still provide:
 
 - an Ubuntu VPS with root/sudo access and outbound internet;
 - DNS pointing the application hostname to the VPS;
-- inbound TCP 80/443;
-- Cloudflare R2 credentials;
+- inbound TCP 80/443 reachable from the internet — allow them in `ufw` (the
+  installer adds the rule when UFW is active) and, on a NAT VPS, forward them
+  in the provider panel; a blocked port shows up as `522`/`525` on the public
+  healthcheck and as a failed ACME challenge;
+- Cloudflare R2 credentials, including `R2_ACCOUNT_ID` as its own variable
+  (or `R2_ENDPOINT`, from which the installer derives it);
 - an R2 API token with permission to create/read/write the attachment and backup buckets; setup creates missing buckets.
 
 > ⚠️ `setup.sh` prints the same prerequisite warning before provisioning. It

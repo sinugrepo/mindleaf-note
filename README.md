@@ -16,8 +16,16 @@ For a **new Ubuntu VPS**, prepare the following before running the script:
 
 - Ubuntu VPS with root/sudo access and outbound internet.
 - Domain A/AAAA record already pointing to the VPS.
-- Inbound TCP ports 80 and 443 open in the VPS/provider firewall.
-- Cloudflare R2 account ID, access key, and secret key.
+- Inbound TCP ports 80 and 443 reachable from the internet. Allow them in
+  `ufw` (the installer adds this rule when UFW is active) **and** in the
+  provider panel: on a NAT VPS the ports must be forwarded there, because
+  nothing inside the guest can open them. When they stay blocked the ACME
+  certificate cannot be issued and the public healthcheck fails with
+  `522` (Cloudflare cannot reach the origin) or `525` (origin has no
+  certificate yet).
+- Cloudflare R2 account ID, access key, and secret key. `R2_ACCOUNT_ID` must
+  be its own variable (see `apps/server/.env.production.example`); a secret
+  bundle that only embeds it inside `R2_ENDPOINT` is also accepted.
 - R2 API token permission to create/read/write the attachment and backup
   buckets. Object-only tokens are insufficient for a fresh install.
 - The script uses `mindleaf-prod`, `mindleaf-prod-backups`, and `db` by default;
